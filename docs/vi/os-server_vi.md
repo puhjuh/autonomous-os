@@ -604,7 +604,7 @@ của board, giống từng byte** (`runtimes/codex/paths_default_test.go` kiể
 cwd, nên `os-dev` chạy từ state dir đúng như `WorkingDirectory=/root` của systemd
 trên board.
 
-Một stack đầy đủ trên laptop cần ba terminal:
+Một stack đầy đủ trên laptop cần bốn terminal:
 
 ```bash
 make sim          # HAL trên :5001
@@ -612,6 +612,21 @@ make codex-dev    # codex bridge trên $CODEX_PORT
 make os-dev       # API trên :5000
 make web-dev      # web UI trên :5173 (tuỳ chọn)
 ```
+
+Để chạy cả bốn tiến trình trong một phiên tmux vẫn tồn tại sau khi ngắt SSH:
+
+```bash
+scripts/dev/lamp-dev.sh start
+scripts/dev/lamp-dev.sh status
+scripts/dev/lamp-dev.sh attach   # Ctrl-b d để thoát mà không dừng dịch vụ
+scripts/dev/lamp-dev.sh logs
+scripts/dev/lamp-dev.sh stop
+```
+
+Launcher chuẩn bị state dùng chung, rồi khởi động HAL, Codex bridge, OS server
+và web UI theo thứ tự phụ thuộc, đồng thời chờ health endpoint của từng dịch vụ.
+Đặt `SIM_MEDIA=host` để chủ động cho phép dùng microphone, loa và camera của
+host; mặc định vẫn là media simulator ảo không cần quyền thiết bị.
 
 os-server không serve HTML: trên board là nginx serve `web/dist` rồi proxy `/api`
 và `/hw` xuống nó. `make web-dev` đặt Vite vào đúng vai nginx, với `LAMP_PROXY`
@@ -743,3 +758,15 @@ Keyword match theo nguyên cụm với word boundary ASCII — "unmute speaker" 
 Chitchat **tắt khi realtime voice agent đang bật** — model nhận mọi lượt voice trước os-server và tự trả lời phần xã giao, đúng nhân cách của nó. Bật cả hai nghĩa là một câu canned với giọng khác chen ngang đúng những lượt model tình cờ im. Các rule lệnh phía trên vẫn chạy trong mọi trường hợp vì chúng thật sự nhanh hơn một vòng model. Cổng này bám theo `realtime.enabled` ngay lúc chạy, đổi trong Settings không cần restart.
 
 Không match → forward OpenClaw.
+
+### Đăng nhập mật khẩu khi không có API key AI
+
+Thiết bị đã có mật khẩu quản trị nhưng chưa có `llm_api_key` (ví dụ dùng tài khoản thuê bao Claude) trả về 401 cho yêu cầu quản trị chưa xác thực để giao diện mở trang đăng nhập. Chỉ thiết bị chưa có cả mật khẩu quản trị lẫn API key cũ mới trả về 503 để mở thiết lập ban đầu. Đăng ký khuôn mặt và giọng nói không tham gia quyết định xác thực này.
+
+### Khởi động bộ dịch vụ trên Pi
+
+`scripts/dev/lamp-boot.sh` điều khiển user service `lamp-stack.target` qua `start`, `stop`, `restart`, `status`, `logs`. Target chỉ chạy HAL, cổng Claude Code, OS server và Vite; không chạy trình mô phỏng riêng ở cổng 8088. Dịch vụ tự khởi động lại khi lỗi. HAL chờ tối đa 10 giây cho camera theo chỉ số đã cấu hình, sau đó vẫn khởi động bằng cơ chế media dự phòng hiện có nếu thiếu camera để không chặn OS. Sau khi cắm lại camera, khởi động lại HAL để dùng camera thật. Cần bật user lingering để chạy khi chưa đăng nhập. Mẫu unit nằm ở `scripts/dev/systemd/`; bản cài đặt ở `~/.config/systemd/user/`, môi trường từng dịch vụ ở `~/.config/lamp/`. Launcher dùng đường dẫn và binary đã cài trên Pi, không build, cài gói hoặc thay thông tin đăng nhập khi boot. Nginx vẫn là system service độc lập đã bật. Không chạy đồng thời bộ tmux cũ trên cùng cổng.
+
+Đặt `LAMP_AMBIENT_MUMBLE=false` trong môi trường OS server để tắt lời tự nói khi nhàn rỗi nhưng vẫn giữ ánh sáng và chuyển động. Âm đệm khi lắng nghe của HAL được điều khiển riêng: đặt `HAL_BACKCHANNEL_FILLERS` thành chuỗi rỗng trong môi trường HAL. Khởi động lại dịch vụ tương ứng sau khi thay đổi.
+
+Trình nhận dạng giọng nói Deepgram của HAL hỗ trợ biến môi trường khởi động `DEEPGRAM_MODEL` (ví dụ `nova-3`). Khi biến trống hoặc chưa được đặt, mô hình vẫn là `flux-general-en`. Đặt `HAL_STT_PROVIDER=deepgram` để thay lựa chọn Whisper cục bộ; khóa API được lưu trong trường `deepgram_api_key` của cấu hình OS riêng tư. Nova-3 nhận tên dùng để đánh thức dưới dạng keyterm. Khởi động lại HAL sau khi thay đổi môi trường.

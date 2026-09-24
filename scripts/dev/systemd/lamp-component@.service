@@ -1,0 +1,13 @@
+[Unit]
+Description=Lamp stack component: %i
+PartOf=lamp-stack.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/home/pj/Documents/lamp/autonomous-os/scripts/dev/lamp-boot.sh run %i
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+KillMode=control-group
+UMask=0077

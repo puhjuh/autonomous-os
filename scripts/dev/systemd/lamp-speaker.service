@@ -1,0 +1,15 @@
+[Unit]
+Description=Local WeSpeaker voice identification
+Before=lamp-component@hal.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pj/Documents/lamp/autonomous-os
+Environment=HAL_SPEAKER_MODEL=/home/pj/.local/share/lamp-speaker/wespeaker_en_voxceleb_resnet34.onnx
+ExecStart=/home/pj/Documents/lamp/autonomous-os/hal/.venv/bin/python -m hal.drivers.voice.speaker_recognizer.local_server
+Restart=on-failure
+RestartSec=3
+UMask=0077
+
+[Install]
+WantedBy=default.target

@@ -490,3 +490,9 @@ auth).
 - **Headless first-run**: presync seeds `~/.claude.json` flags; if the CLI adds
   new interactive gates, the bridge child may exit on start — check
   `journalctl -u claudecode` and `claude` stderr lines in the bridge log.
+
+## Local Pi account startup
+
+For a Pi using a normal Linux account, install Claude Code and run `claude auth login` as that account. Set `OS_AGENT_HOME` to its home and `OS_CONFIG_PATH` to the OS config file. The Claude workspace, user skills, login lookup, and gateway child use that home; unset variables retain the `/root` deployment defaults. Presync skips system-wide shell helpers for non-root users. Voice and vision still need their own configured providers.
+
+`OS_AGENT_RUNTIME=claudecode scripts/dev/lamp-dev.sh start` selects `make claudecode-dev` on port 18791 instead of the Codex bridge. Set `OS_STATE_DIR` to a persistent writable directory and ensure Node/npm and Claude are on PATH. The web UI listens on the LAN and proxies API requests to port 5000. Failed tmux windows remain available for logs. This launcher still uses simulated HAL hardware.

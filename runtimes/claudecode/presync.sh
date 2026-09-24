@@ -26,11 +26,12 @@
 # materialized to /usr/local/bin/runtime-claudecode-presync on every switch.
 set -euo pipefail
 
-CONFIG_JSON="/root/config/config.json"          # device/project config (source of truth)
-CC_DIR="/root/.claudecode"
+AGENT_USER_HOME="${OS_AGENT_HOME:-/root}"
+CONFIG_JSON="${OS_CONFIG_PATH:-/root/config/config.json}"          # device/project config (source of truth)
+CC_DIR="${CLAUDECODE_HOME:-$AGENT_USER_HOME/.claudecode}"
 WS_DIR="$CC_DIR/workspace"
 ENV_FILE="$CC_DIR/.env"
-CLAUDE_HOME="/root/.claude"
+CLAUDE_HOME="$AGENT_USER_HOME/.claude"
 
 # Claude Code calls {ANTHROPIC_BASE_URL}/v1/messages — same anthropic-messages
 # endpoint hermes uses, so the base has NO trailing /v1 (unlike picoclaw's
@@ -56,7 +57,7 @@ jq_edit() { local f="$1"; shift; local tmp; tmp="$(mktemp)"; jq "$@" "$f" >"$tmp
 # ~/.claude.json: skip the interactive first-run onboarding + accept the
 # bypass-permissions warning — a headless device has no TTY to answer either.
 log "seed headless flags in ~/.claude.json"
-CLAUDE_JSON="/root/.claude.json"
+CLAUDE_JSON="$AGENT_USER_HOME/.claude.json"
 [ -f "$CLAUDE_JSON" ] || echo '{}' >"$CLAUDE_JSON"
 jq_edit "$CLAUDE_JSON" '
     .hasCompletedOnboarding          = true
@@ -152,6 +153,7 @@ umask 022
 # live from config.json so it stays correct across runtime switches without
 # rewriting. Guarded to interactive shells only (no leak into scripts/cron).
 write_cli_login_env() {
+  [ "$(id -u)" -eq 0 ] || return 0
   cat >/etc/profile.d/agent-cli-env.sh <<'PROFILE'
 # Managed by os-server runtime presync — do not edit.
 case "$-" in *i*) ;; *) return 2>/dev/null || exit 0 ;; esac
@@ -181,6 +183,7 @@ write_cli_login_env && log "wrote /etc/profile.d/agent-cli-env.sh (interactive C
 # subcommand (cmd/os-server/cc.go); this wrapper just sudo-reexecs into it
 # (sessions live under /root).
 write_session_picker() {
+  [ "$(id -u)" -eq 0 ] || return 0
   cat >/usr/local/bin/claude-sessions <<'PICKER'
 #!/bin/sh
 # Managed by os-server runtime presync — do not edit.

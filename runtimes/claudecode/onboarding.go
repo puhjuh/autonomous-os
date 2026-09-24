@@ -16,6 +16,7 @@ import (
 
 	"go.autonomous.ai/os/system/device"
 	"go.autonomous.ai/os/system/domain"
+	"go.autonomous.ai/os/system/lib/syspath"
 )
 
 // knowledgeFS holds the KNOWLEDGE.md skeleton, embedded so a fresh
@@ -51,7 +52,9 @@ const (
 	// osMandatoryMarker delimits the OS-managed block so it can be stripped +
 	// re-injected cleanly on update. MUST match the marker used in the blocks below.
 	osMandatoryMarker = "<!-- OS DO NOT REMOVE -->"
+)
 
+var (
 	// claudecodeWorkspaceDir is the cwd the bridge runs Claude Code in. Claude
 	// auto-loads <cwd>/CLAUDE.md, <cwd>/.mcp.json and <cwd>/.claude/settings.json
 	// from here. Skills are NOT installed here — see claudecodeSkillsDir.
@@ -59,7 +62,7 @@ const (
 
 	// claudeUserDir is Claude Code's user-level config dir. The gatewayd runs the
 	// claude child with HOME=/root (gatewayd.Config.Home), so this is $HOME/.claude.
-	claudeUserDir = "/root/.claude"
+	claudeUserDir = syspath.AgentHome() + "/.claude"
 
 	// claudeUserMDPath is the user-level memory file. Claude Code loads it in EVERY
 	// session regardless of cwd — unlike the workspace CLAUDE.md, which only the
@@ -77,7 +80,9 @@ const (
 	// EVERY session regardless of cwd, so the device chat AND coding sessions both
 	// get them.
 	claudecodeSkillsDir = claudeUserDir + "/skills"
+)
 
+const (
 	// claudeMDBlock is the OS-managed block injected at the top of the USER-level
 	// memory file (~/.claude/CLAUDE.md — claudeUserMDPath), NOT the workspace one.
 	// Claude Code loads the user file in every session regardless of cwd, so the
@@ -147,10 +152,10 @@ func (s *ClaudeCodeService) SetupAgent(_ domain.SetupRequest) error {
 // (the bridge itself ships inside the os-server binary — nothing to hash).
 var presyncStateFiles = []string{
 	claudecodeHome + "/.env",
-	"/root/.claude/channels/telegram/.env",
-	"/root/.claude/channels/telegram/access.json",
-	"/root/.claude/channels/discord/.env",
-	"/root/.claude/channels/discord/access.json",
+	claudeUserDir + "/channels/telegram/.env",
+	claudeUserDir + "/channels/telegram/access.json",
+	claudeUserDir + "/channels/discord/.env",
+	claudeUserDir + "/channels/discord/access.json",
 }
 
 // EnsureOnboarding reconciles the device-side Claude Code state on every

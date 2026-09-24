@@ -534,3 +534,21 @@ func TestAuthRejectsWrongToken(t *testing.T) {
 		t.Fatalf("expected close code %d, got %v", closeUnauthorized, err)
 	}
 }
+
+func TestConfigUsesAgentHomeForClaudeLogin(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("OS_AGENT_HOME", home)
+	t.Setenv("CLAUDECODE_HOME", "")
+	t.Setenv("CLAUDECODE_WORKSPACE", "")
+	t.Setenv("CLAUDECODE_ENV_FILE", "")
+	t.Setenv("CLAUDECODE_SESSION_FILE", "")
+	cfg := configFromEnv()
+	if cfg.Home != home || cfg.Workspace != home+"/.claudecode/workspace" || cfg.EnvFile != home+"/.claudecode/.env" {
+		t.Fatalf("Claude must share the signed-in account home: %+v", cfg)
+	}
+	t.Setenv("CLAUDECODE_HOME", home+"/custom-state")
+	cfg = configFromEnv()
+	if cfg.Home != home || cfg.SessionFile != home+"/custom-state/session.json" {
+		t.Fatalf("State override must not change the authentication home: %+v", cfg)
+	}
+}

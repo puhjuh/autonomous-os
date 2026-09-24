@@ -1,5 +1,7 @@
 package claudecode
 
+import "go.autonomous.ai/os/system/lib/syspath"
+
 // Wire constants for the Claude Code backend. Claude Code (the Anthropic CLI
 // agent) has no server mode of its own, so the device runs a thin local bridge:
 // the Go gatewayd (runtimes/claudecode/gatewayd) compiled into the os-server
@@ -34,11 +36,13 @@ const (
 	// Conversation is a label only — Claude Code owns its session ids; the real
 	// session UUID is captured from the stream-json `system:init` event.
 	Conversation = "device-main"
+)
 
+var (
 	// claudecodeHome is the backend's device-local state dir: .env
 	// (ANTHROPIC_* + channel launch flags, presync-owned), session.json, and the
 	// workspace/ Claude Code runs in.
-	claudecodeHome = "/root/.claudecode"
+	claudecodeHome = syspath.AgentRuntimeHome("claudecode")
 
 	// EnvFile is the presync-owned launch env (ANTHROPIC_* creds + channel
 	// flags). systemd injects it into the gatewayd only; the web CLI sources it

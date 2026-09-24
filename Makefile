@@ -73,7 +73,7 @@ OS_AGENT_STATE_PATH ?= $(OS_STATE_DIR)/config/agent_state.json
 OS_BOOTSTRAP_CONFIG ?= $(OS_STATE_DIR)/config/bootstrap.json
 OS_LOG_FILE         ?= $(OS_STATE_DIR)/os-server.log
 # `make codex-dev` tees the bridge here; os-server reads it for the Agent tab.
-OS_AGENT_BRIDGE_LOG ?= $(OS_STATE_DIR)/codex-gatewayd.log
+OS_AGENT_BRIDGE_LOG ?= $(OS_STATE_DIR)/$(OS_AGENT_RUNTIME)-gatewayd.log
 # HAL writes it (HAL_LOG_DIR, HAL section below); os-server reads it for the HAL tab.
 OS_HAL_LOG_FILE     ?= $(HAL_LOG_DIR)/server.log
 
@@ -112,6 +112,11 @@ codex-dev: os-dev-build
 	@echo "codex bridge: ws://127.0.0.1:$(CODEX_PORT)/codex/ws/ (CODEX_HOME=$(CODEX_HOME))"
 	@mkdir -p $(OS_STATE_DIR)
 	$(OS_DEV_ENV) CODEX_BIN=$(CODEX_BIN) $(OS_STATE_DIR)/os-server codex-gatewayd 2>&1 | tee $(OS_AGENT_BRIDGE_LOG)
+
+.PHONY: claudecode-dev
+claudecode-dev: os-dev-build
+	@command -v claude >/dev/null || { echo "Claude Code not found — install and run claude auth login first"; exit 1; }
+	$(OS_DEV_ENV) $(OS_STATE_DIR)/os-server claudecode-gatewayd 2>&1 | tee $(OS_AGENT_BRIDGE_LOG)
 
 # ============================================================================
 # HAL (Python) — dev | run | test

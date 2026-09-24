@@ -25,6 +25,7 @@ package gatewayd
 
 import (
 	"context"
+	"go.autonomous.ai/os/system/lib/syspath"
 	"io"
 	"log"
 	"net"
@@ -78,7 +79,7 @@ func configFromEnv() Config {
 	}
 	// CLAUDECODE_HOME is the backend state dir (/root/.claudecode) — the
 	// defaults below keep existing .env-based deployments working unchanged.
-	home := envOr("CLAUDECODE_HOME", "/root/.claudecode")
+	home := envOr("CLAUDECODE_HOME", syspath.AgentRuntimeHome("claudecode"))
 	return Config{
 		// Token defaults to runtimes/claudecode/constants.go Token — the two
 		// sides of the socket MUST agree.
@@ -89,7 +90,7 @@ func configFromEnv() Config {
 		SessionFile:    envOr("CLAUDECODE_SESSION_FILE", home+"/session.json"),
 		ClaudeBin:      envOr("CLAUDECODE_BIN", "claude"),
 		RestartBackoff: backoff,
-		Home:           "/root",
+		Home:           syspath.AgentHome(),
 	}
 }
 

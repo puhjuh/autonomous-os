@@ -615,7 +615,7 @@ no second code path. Only the device-absolute paths move, through the env vars
 cwd, so `os-dev` runs from the state dir exactly as systemd's
 `WorkingDirectory=/root` does on the board.
 
-A full laptop stack is three terminals:
+A full laptop stack is four terminals:
 
 ```bash
 make sim          # HAL on :5001
@@ -623,6 +623,21 @@ make codex-dev    # codex bridge on $CODEX_PORT
 make os-dev       # API on :5000
 make web-dev      # web UI on :5173 (optional)
 ```
+
+To run all four in a tmux session that survives SSH disconnects:
+
+```bash
+scripts/dev/lamp-dev.sh start
+scripts/dev/lamp-dev.sh status
+scripts/dev/lamp-dev.sh attach   # Ctrl-b d detaches without stopping services
+scripts/dev/lamp-dev.sh logs
+scripts/dev/lamp-dev.sh stop
+```
+
+The launcher prepares the shared state, starts HAL, the Codex bridge, the OS
+server, and the web UI in dependency order, and waits for each health endpoint.
+Set `SIM_MEDIA=host` to opt into host microphone, speaker, and camera access;
+the default remains the permission-free virtual media simulator.
 
 os-server serves no HTML: on a board nginx serves `web/dist` and proxies `/api`
 and `/hw` to it. `make web-dev` puts Vite in nginx's place, with `LAMP_PROXY`
@@ -760,3 +775,15 @@ Keyword matching is whole-phrase with ASCII word boundaries — "unmute speaker"
 Chitchat is **off while the realtime voice agent is enabled** — the model receives every voice turn before os-server does and answers social talk itself, in character. Leaving both on meant a canned reply in a different voice barging in on the turns the model happened to stay silent for. Command rules above stay on either way; they genuinely beat a model round-trip. The gate follows `realtime.enabled` live, so toggling it in Settings needs no restart.
 
 No match → forward to OpenClaw.
+
+### Password login without an AI API key
+
+A device with an admin password but no `llm_api_key` (for example, a Claude subscription login) returns 401 for unauthenticated admin requests. The web UI then opens Login. Only devices with neither an admin password nor a legacy API key return 503 to trigger initial setup. Face and voice enrollment are not part of this authentication decision.
+
+### Pi workstation boot launcher
+
+`scripts/dev/lamp-boot.sh` controls the installed `lamp-stack.target` user service with `start`, `stop`, `restart`, `status`, and `logs`. The target starts only HAL, the Claude Code gateway, OS server, and Vite dashboard; the separate port 8088 browser simulator is excluded. Services restart on failure. HAL waits up to 10 seconds for the configured camera index, then starts even if the camera is absent, using its existing media fallback so OS startup is not blocked. After reconnecting a missing camera, restart HAL to select host capture again. User lingering must be enabled for startup without login. Unit templates live in `scripts/dev/systemd/`; deployed units are in `~/.config/systemd/user/`, with saved per-component environment in `~/.config/lamp/`. The launcher uses this Pi’s explicit checkout/runtime paths and installed binaries; it does not build, install packages, or modify credentials at boot. Nginx remains its existing independently enabled system service. Do not also start the old tmux development stack on the same ports.
+
+Set `LAMP_AMBIENT_MUMBLE=false` in the OS server environment to disable unsolicited idle self-talk while retaining ambient light and motion. HAL listening fillers are separate: set `HAL_BACKCHANNEL_FILLERS` to an empty string in the HAL environment. Restart the affected service after changing either setting.
+
+The HAL Deepgram streaming provider accepts `DEEPGRAM_MODEL` in its startup environment (for example, `nova-3`). Empty or unset values retain `flux-general-en`. Set `HAL_STT_PROVIDER=deepgram` to bypass an explicit local Whisper selection; the API key remains in the private OS configuration field `deepgram_api_key`. Nova-3 receives wake-word names as keyterms. Restart HAL after changing its environment.

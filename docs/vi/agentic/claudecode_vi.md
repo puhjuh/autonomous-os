@@ -480,3 +480,9 @@ flow login chạy lại cho subscription auth).
 - **First-run headless**: presync seed các flag trong `~/.claude.json`; nếu CLI
   thêm gate tương tác mới, child của bridge có thể exit ngay khi start — check
   `journalctl -u claudecode` và các dòng stderr của `claude` trong log bridge.
+
+## Khởi chạy bằng tài khoản Pi thông thường
+
+Cài Claude Code và chạy `claude auth login` bằng tài khoản Linux đang dùng. Đặt `OS_AGENT_HOME` thành thư mục nhà và `OS_CONFIG_PATH` thành đường dẫn cấu hình OS. Workspace, kỹ năng, thông tin đăng nhập và tiến trình Claude sử dụng thư mục này; khi không đặt biến, mặc định `/root` vẫn giữ nguyên. Presync bỏ qua tiện ích shell toàn hệ thống khi không chạy bằng root. Giọng nói và thị giác vẫn cần cấu hình nhà cung cấp riêng.
+
+`OS_AGENT_RUNTIME=claudecode scripts/dev/lamp-dev.sh start` chọn `make claudecode-dev` trên cổng 18791 thay cho Codex. Đặt `OS_STATE_DIR` vào thư mục có thể ghi và lưu qua lần khởi động lại; bảo đảm Node/npm và Claude có trên PATH. Web UI lắng nghe trong LAN, chuyển tiếp API tới cổng 5000. Cửa sổ tmux bị lỗi được giữ để xem log. Launcher này vẫn dùng HAL mô phỏng.

@@ -187,8 +187,9 @@ func localOnlyMiddleware() gin.HandlerFunc {
 //
 // Reading the expected token from cfg.LLMAPIKey at request time means a
 // PUT /api/device/config rotation takes effect without a restart. Constant-time
-// compare on the bearer path keeps timing channels closed. Empty configured key
-// AND empty session secret both fail closed (503 admin auth not configured).
+// compare on the bearer path keeps timing channels closed. With an admin password
+// configured, missing credentials return 401 so the browser opens login. With
+// neither a legacy API key nor an admin password, return 503 for initial setup.
 //
 // setupOrAdminMiddleware gates POST /api/device/setup with a hybrid policy:
 //   - SetUpCompleted == false → open (fresh device; no admin exists yet, can't
@@ -273,8 +274,14 @@ func adminAuthMiddleware(cfg *config.Config) gin.HandlerFunc {
 		}
 		expected := cfg.LLMAPIKey
 		if expected == "" {
-			// No bearer configured AND no valid session → can't admit anyone.
-			c.JSON(http.StatusServiceUnavailable, serializers.ResponseError("admin auth not configured"))
+			// Subscription-backed agents may have no LLM API key. A configured
+			// admin password still enables browser login; 503 would incorrectly
+			// send an unauthenticated browser back to the setup wizard.
+			if cfg.AdminPasswordHash != "" {
+				c.JSON(http.StatusUnauthorized, serializers.ResponseError("unauthorized"))
+			} else {
+				c.JSON(http.StatusServiceUnavailable, serializers.ResponseError("admin auth not configured"))
+			}
 			c.Abort()
 			return
 		}

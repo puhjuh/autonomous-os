@@ -1,0 +1,7 @@
+[Unit]
+Description=Autonomous OS hardware service, agent, server, and dashboard
+Wants=lamp-component@hal.service lamp-component@agent.service lamp-component@os.service lamp-component@web.service
+After=lamp-component@hal.service lamp-component@agent.service lamp-component@os.service lamp-component@web.service
+
+[Install]
+WantedBy=default.target
