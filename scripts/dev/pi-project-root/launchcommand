@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -eo pipefail
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/autonomous-os"
+# Load the same Node installation used by the interactive terminal.
+if ! command -v npm >/dev/null 2>&1 && [[ -s "$HOME/.nvm/nvm.sh" ]]; then
+  export NVM_DIR="$HOME/.nvm"
+  source "$NVM_DIR/nvm.sh"
+fi
+# Keep device settings across reboots (/tmp is cleared on this Pi).
+export OS_STATE_DIR="${OS_STATE_DIR:-$HOME/.local/state/lamp/autonomous-os}"
+export PATH="$HOME/.local/bin:$PATH"
+export OS_AGENT_RUNTIME=claudecode
+export ANTHROPIC_MODEL=claude-haiku-4-5-20251001
+export OS_AGENT_HOME="$HOME"
+export OS_CONFIG_PATH="$OS_STATE_DIR/config/config.json"
+# Optional temporary host camera/microphone profile. Remove to restore virtual media.
+if [[ -f "$OS_STATE_DIR/media.env" ]]; then
+  source "$OS_STATE_DIR/media.env"
+fi
+exec scripts/dev/lamp-dev.sh "${@:-start}"
