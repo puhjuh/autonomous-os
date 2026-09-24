@@ -38,7 +38,7 @@ class DisplayMode:
 class DisplayService:
     """Manages the GC9A01 display with eyes and info modes."""
 
-    def __init__(self):
+    def __init__(self, hardware_enabled: bool = True):
         self._driver = None  # GC9A01 hardware driver (None on dev machines)
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -55,6 +55,10 @@ class DisplayService:
 
         # Last rendered frame (for snapshot)
         self._last_frame: Optional[Image.Image] = None
+
+        if not hardware_enabled:
+            logger.info("Display runs in framebuffer-only mode")
+            return
 
         # Try to init hardware driver
         try:
@@ -129,6 +133,16 @@ class DisplayService:
             buf = io.BytesIO()
             self._last_frame.save(buf, format="JPEG", quality=85)
             return buf.getvalue()
+
+    def get_frame_png_bytes(self) -> Optional[bytes]:
+        """Encode the last rendered framebuffer losslessly, without re-rendering."""
+        with self._lock:
+            if self._last_frame is None:
+                return None
+            frame = self._last_frame.copy()
+        buf = io.BytesIO()
+        frame.save(buf, format="PNG")
+        return buf.getvalue()
 
     def get_state(self) -> dict:
         with self._lock:

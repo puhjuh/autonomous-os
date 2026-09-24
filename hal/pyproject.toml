@@ -112,6 +112,9 @@ name = "pycairo"
 requires-python = ">=3.9"
 
 [project.optional-dependencies]
+local-stt = ["vosk==0.3.45"]
+local-speaker = ["sherpa-onnx==1.13.7"]
+local-whisper = ["sherpa-onnx==1.13.7"]
 dev = [
     "pyflakes>=3.0",
     # `make hal-test` runs `.venv/bin/python -m pytest test/`. Declared here so

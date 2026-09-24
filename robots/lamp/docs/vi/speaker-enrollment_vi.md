@@ -375,3 +375,45 @@ Cùng unknown speaker, 2 phút sau:
 → Lamp: AppendEnrollNudge → cooldown CHƯA hết (< 5 phút) → bỏ qua instruction
 → Agent: thấy "Unknown Speaker: ..." không có SKILL instruction → phản hồi bình thường
 ```
+
+## Mô hình nhận diện giọng nói cục bộ trên CPU (Raspberry Pi)
+
+Cài dependency tùy chọn `local-speaker` của HAL (`sherpa-onnx==1.13.7`).
+Tải `wespeaker_en_voxceleb_resnet34.onnx` từ
+[bản phát hành mô hình Sherpa-ONNX chính thức](https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models)
+vào bộ nhớ bền vững ngoài repository. Mô hình khoảng 26,5 MB.
+Chạy từ thư mục gốc repository bằng môi trường Python của HAL:
+
+```sh
+HAL_SPEAKER_MODEL=/absolute/path/wespeaker_en_voxceleb_resnet34.onnx \
+  python -m hal.drivers.voice.speaker_recognizer.local_server
+```
+
+Đặt `SPEAKER_EMBEDDING_API_URL=http://127.0.0.1:5002/embed` trong môi trường HAL
+rồi khởi động lại HAL. Endpoint chỉ định trực tiếp được ưu tiên hơn backend đám mây;
+API key mặc định rỗng. Yêu cầu loopback bỏ qua giao thức mã hóa đám mây.
+Dịch vụ chỉ lắng nghe tại 127.0.0.1, không cần tài khoản hoặc mạng khi suy luận.
+Dùng user service khởi động trước HAL để tự phục hồi sau khi reboot.
+
+`GET /health` trả về dấu vân tay của mô hình. `/embed` nhận WAV mono 16 kHz đã được
+HAL tiền xử lý, tổng 0,5–120 giây mỗi yêu cầu, tối đa 8 bản ghi.
+Đăng ký dùng toàn bộ câu nói; nhận diện dùng cửa sổ 3 giây, bước 1 giây.
+Vector được chuẩn hóa; dấu vân tay hỗ trợ cơ chế chuyển đổi bản ghi đã lưu khi
+mô hình thay đổi. Đăng ký qua Settings → My Voice và API speaker thông thường;
+không chỉnh sửa trực tiếp hồ sơ. Cần kiểm tra chất lượng và ngưỡng tương đồng hiện
+có bằng giọng nói thực trên thiết bị. Mô hình này nhận diện người nói, không thay
+thế nhận dạng lời nói, Piper hoặc mô hình ngôn ngữ hội thoại.
+
+Trên Pi hiện tại, `lamp-speaker.service` chạy endpoint cục bộ khi đăng nhập/khởi động.
+`SPEAKER_MATCH_COS=0.78` và `SPEAKER_DIVERSITY_COS=0.90` là cấu hình ban đầu đã thử
+với bản ghi mẫu trong repository (khớp cùng người, từ chối bản ghi của người khác);
+đây không phải bảo đảm độ chính xác trong gia đình. Cần kiểm tra lại với người đã
+đăng ký và micro thực tế.
+
+Dữ liệu danh tính trên Pi được lưu bền vững trong
+`/home/pj/.local/share/lamp/identity/`: `users/` chứa hồ sơ khuôn mặt/giọng nói,
+`strangers/` chứa nhóm khuôn mặt lạ và `voice_strangers/` chứa nhóm giọng nói lạ.
+HAL chọn các đường dẫn qua `HAL_USERS_DIR`, `HAL_STRANGERS_DIR` và
+`HAL_VOICE_STRANGERS_DIR` trong `/home/pj/.config/lamp/hal.env`, thay cho đường dẫn
+tạm của simulator. Khi chuyển dữ liệu, HAL đã dừng và từng tệp sao chép được
+kiểm tra giống hệt bản gốc; các thư mục tạm ban đầu vẫn được giữ lại.

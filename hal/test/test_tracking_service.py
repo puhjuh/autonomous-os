@@ -104,3 +104,119 @@ def test_tracking_timeout_stops_even_when_camera_has_no_frames(monkeypatch):
     assert animation.robot.actions == []
     assert animation._current_state == animation.positions
     assert animation.dispatched == [("play", "idle")]
+
+
+def test_tracking_timeout_releases_virtual_motors(monkeypatch):
+    from hal.drivers.motors.mock_service import MockMotionService
+
+    service = object.__new__(TrackerService)
+    state = TrackingState(target_label="object")
+    state.running.set()
+    service._state = state
+    service._follower = _FakeFollower()
+    service._yaw_pid = _FakePID()
+    service._pitch_pid = _FakePID()
+    motion = MockMotionService()
+    # Exercise the physical timeout contract even with an in-memory test bus.
+    motion.tracking_fixed_camera = False
+    motion.start()
+    clock = iter((0.0, C.MAX_TRACK_DURATION_S + 0.1, C.MAX_TRACK_DURATION_S + 0.1))
+    monkeypatch.setattr(tracker_service.time, "perf_counter", lambda: next(clock))
+    try:
+        service._track_loop(_NoFrameCamera(), motion)
+        assert not state.running.is_set()
+        assert not motion._tracking_active
+        assert not motion._hold_mode
+        assert all(v == 0 for v in motion.robot.bus.sync_read("Goal_Velocity").values())
+        assert ("dispatch", "play", "idle") in motion.calls
+    finally:
+        motion.stop()
+
+
+def test_fixed_camera_tracking_continues_past_physical_timeout(monkeypatch):
+    from hal.drivers.motors.mock_service import MockMotionService
+
+    service = object.__new__(TrackerService)
+    state = TrackingState(target_label="person")
+    state.running.set()
+    service._state = state
+    service._follower = _FakeFollower()
+    service._yaw_pid = _FakePID()
+    service._pitch_pid = _FakePID()
+    reads = []
+
+    class Camera:
+        @property
+        def last_frame(self):
+            reads.append(True)
+            state.running.clear()
+            return None
+
+    motion = MockMotionService()
+    motion.start()
+    clock = iter((0.0, C.MAX_TRACK_DURATION_S + 100))
+    monkeypatch.setattr(tracker_service.time, "perf_counter", lambda: next(clock))
+    try:
+        service._track_loop(Camera(), motion)
+        assert reads == [True]
+        assert not motion._tracking_active
+    finally:
+        motion.stop()
+
+
+def test_face_watch_retries_absence_and_loss_and_stops(monkeypatch):
+    import time
+
+    service = TrackerService()
+    attempts = []
+    acquired = threading.Event()
+    lose_face = threading.Event()
+
+    def acquire(bbox, label, camera, animation):
+        attempts.append(label)
+        if len(attempts) == 1:
+            return False  # Empty room when the user first enables face tracking.
+        state = TrackingState(target_label=label, bbox=(1, 2, 30, 40))
+        state.running.set()
+        service._state = state
+
+        def track():
+            acquired.set()
+            while state.running.is_set() and not lose_face.wait(.01):
+                pass
+            state.running.clear()
+
+        state.thread = threading.Thread(target=track)
+        state.thread.start()
+        return True
+
+    monkeypatch.setattr(service, '_start_locked', acquire)
+    try:
+        assert service.start(target_label='face', camera_capture=object(), animation_service=object())
+        assert service.status['tracking']
+        assert service.status['searching']
+        assert service.status['bbox'] is None
+        assert acquired.wait(3)
+        assert not service.status['searching']
+        lose_face.set()
+        deadline = time.monotonic() + 3
+        while len(attempts) < 3 and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert len(attempts) >= 3  # Loss automatically triggers another acquisition.
+        service.stop()
+        count = len(attempts)
+        time.sleep(.05)
+        assert len(attempts) == count
+        assert not service.is_tracking
+        assert service.status['bbox'] is None
+    finally:
+        service.stop()
+
+
+def test_object_tracking_remains_one_shot(monkeypatch):
+    service = TrackerService()
+    calls = []
+    monkeypatch.setattr(service, '_start_locked', lambda *args: calls.append(args) or False)
+    assert not service.start(target_label='cup', camera_capture=object(), animation_service=object())
+    assert len(calls) == 1
+    assert not service.is_tracking

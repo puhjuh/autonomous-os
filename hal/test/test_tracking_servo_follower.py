@@ -363,3 +363,67 @@ def test_pitch_and_pan_do_not_touch_each_other_s_joints():
 
     pan = servo_follow.distribute_yaw(_pan_rest(), 8.0)
     assert not ({"base_pitch.pos", "elbow_pitch.pos", "wrist_pitch.pos"} & set(pan))
+
+
+def test_virtual_motors_follow_and_freeze_without_hardware():
+    from hal.drivers.motors.mock_service import MockMotionService
+
+    motion = MockMotionService()
+    motion.start()
+    motion.send_positions(_pose(5.0))
+    follower = ServoFollower()
+    follower.read_initial_positions(motion)
+    assert follower.positions() == _pose(5.0)
+    follower.set_goal(_pose(8.0))
+    running = threading.Event()
+    running.set()
+    motion.freeze()
+    follower.start(motion, running)
+    try:
+        time.sleep(0.05)
+        assert motion.get_positions()[JOINTS[0]] == 5.0
+        motion.unfreeze()
+        deadline = time.monotonic() + 2
+        while motion.get_positions()[JOINTS[0]] <= 5.0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert 5.0 < motion.get_positions()[JOINTS[0]] <= 8.0
+        assert motion.last_servo_write > 0
+    finally:
+        running.clear()
+        follower.join(2)
+        motion.stop()
+
+
+def test_fixed_camera_target_is_absolute_and_returns_to_center():
+    from hal.presets import AIM_CENTER, AIM_PRESETS
+
+    reference = dict(AIM_PRESETS[AIM_CENTER])
+    follower = ServoFollower()
+    follower.command_fixed_camera(160, 80, 640, reference)
+    first = dict(follower._goal)
+    assert first['base_yaw.pos'] == reference['base_yaw.pos'] + 15
+    # Simulate arriving at the commanded pose, then seeing the same pixels.
+    follower._yaw = first['base_yaw.pos']
+    follower._base_pitch = first['base_pitch.pos']
+    follower._elbow_pitch = first['elbow_pitch.pos']
+    follower._wrist_pitch = first['wrist_pitch.pos']
+    for _ in range(100):
+        follower.command_fixed_camera(160, 80, 640, reference)
+        assert follower._goal == first
+    follower.command_fixed_camera(0, 0, 640, reference)
+    assert follower._goal == {j: reference[j] for j in JOINTS}
+    follower.command_fixed_camera(-160, -80, 640, reference)
+    assert follower._goal['base_yaw.pos'] == reference['base_yaw.pos'] - 15
+
+
+def test_fixed_camera_mapping_is_resolution_independent_and_bounded():
+    from hal.presets import AIM_CENTER, AIM_PRESETS
+
+    reference = dict(AIM_PRESETS[AIM_CENTER])
+    follower = ServoFollower()
+    follower.command_fixed_camera(160, 80, 640, reference)
+    expected = dict(follower._goal)
+    follower.command_fixed_camera(320, 160, 1280, reference)
+    assert follower._goal == expected
+    follower.command_fixed_camera(1e6, 1e6, 640, reference)
+    assert follower._goal['base_yaw.pos'] == reference['base_yaw.pos'] + C.CAMERA_FOV_DEG / 2

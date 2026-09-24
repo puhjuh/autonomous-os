@@ -81,6 +81,29 @@ DEFAULT_JOINTS = (
 )
 
 
+class _VirtualTrackingRobot:
+    """Lamp tracker compatibility surface; all writes stay in memory."""
+
+    def __init__(self, motion):
+        self.motion = motion
+        self.bus = self
+        self.registers = {}
+
+    def sync_read(self, register):
+        if register == "Present_Position":
+            return {k.removesuffix(".pos"): v for k, v in self.motion.get_positions().items()}
+        return dict(self.registers.get(register, {}))
+
+    def sync_write(self, register, values):
+        if register == "Goal_Position":
+            self.send_action({f"{k}.pos": v for k, v in values.items()})
+        else:
+            self.registers.setdefault(register, {}).update(values)
+
+    def send_action(self, positions):
+        self.motion.send_positions(positions)
+
+
 class MockMotionService:
     """In-memory MotionService. Every mutation is recorded in `calls`."""
 
@@ -105,6 +128,14 @@ class MockMotionService:
             self._positions.update(AIM_PRESETS[AIM_CENTER])
         self._lock = threading.Lock()
         self._connected = False
+        self.bus_lock = threading.RLock()
+        self.robot = _VirtualTrackingRobot(self)
+        self._running = threading.Event()
+        self._running.set()
+        self.tracking_fixed_camera = True
+        self._tracking_active = False
+        self._hold_mode = False
+        self._last_servo_write = 0.0
         self._suppressed = False
         # `_suppressed` has three setters and cannot say which. Write both together.
         self._mode: Optional[str] = None
@@ -143,7 +174,10 @@ class MockMotionService:
 
     def dispatch(self, event_type: str, payload: Any) -> None:
         if event_type == "play":
-            self._play_recording(str(payload))
+            if payload == "tracking" or self._tracking_active:
+                self._cancel_playback()
+            else:
+                self._play_recording(str(payload))
         self._record("dispatch", event_type, payload)
 
     def get_available_recordings(self) -> List[str]:
@@ -156,6 +190,10 @@ class MockMotionService:
         self._record("add_recording", name, len(actions))
 
     # --- Freeze ---
+
+    @property
+    def last_servo_write(self) -> float:
+        return self._last_servo_write
 
     def freeze(self) -> None:
         self._frozen = True
@@ -354,6 +392,7 @@ class MockMotionService:
             for joint, value in positions.items():
                 if joint in self._joints:
                     self._positions[joint] = float(value)
+                    self._last_servo_write = time.monotonic()
 
     def _cancel_playback(self) -> None:
         self._play_cancel.set()
@@ -386,7 +425,10 @@ class MockMotionService:
                     for timestamp, positions in current:
                         if cancel.wait(max(0.0, timestamp - previous)):
                             return
-                        self._apply(positions)
+                        if self._tracking_active:
+                            return
+                        if not self._frozen:
+                            self._apply(positions)
                         previous = timestamp
                     if playing == self.idle_recording:
                         continue  # idle is the resting loop, not a one-shot

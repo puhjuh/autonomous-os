@@ -7,6 +7,7 @@ raw encoder values) leak into this file.
 """
 
 import csv
+from dataclasses import asdict
 import io
 import os
 import re
@@ -15,6 +16,8 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, File, Form, UploadFile
+from pydantic import BaseModel, Field
+from hal.drivers.tracking.affect import STYLES
 
 import hal.app_state as state
 from hal.safety.policy import min_move_duration
@@ -362,6 +365,48 @@ def get_servo_position():
         raise HTTPException(500, f"Failed to read position: {e}")
 
 
+class AffectRequest(BaseModel):
+    name: str
+    intensity: float = Field(default=1.0, ge=0, le=1, allow_inf_nan=False)
+    transition_s: float = Field(default=0.5, ge=0, le=10, allow_inf_nan=False)
+
+
+@router.get("/servo/affect")
+def get_motion_affect():
+    return {"profiles": {name: asdict(style) for name, style in STYLES.items()},
+            "affect": state.tracker_service.status.get("affect")
+            if state.tracker_service else None}
+
+
+@router.post("/servo/affect")
+def set_motion_affect(req: AffectRequest):
+    # Change tracking style only. This never starts tracking or resumes a motor.
+    if not state.tracker_service:
+        raise HTTPException(503, "Tracker service not available")
+    try:
+        state.tracker_service.set_affect(req.name, req.intensity, req.transition_s)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"status": "ok", "affect": state.tracker_service.status.get("affect")}
+
+
+@router.get("/servo/output")
+def get_servo_output():
+    """Observe the Pi motion service without treating mock angles as feedback."""
+    svc = _svc_connected()
+    from hal.drivers.motors.factory import MOTION_DRIVERS
+    identity = (type(svc).__module__, type(svc).__name__)
+    driver = next((name for name, entry in MOTION_DRIVERS.items()
+                   if entry == identity), "unknown")
+    return {"positions": svc.get_positions(), "units": "degrees",
+            "driver": driver, "source": "pi-motion-service",
+            "position_kind": "simulated" if driver == "mock" else "driver-reported",
+            "physical_feedback_verified": False,
+            "sampled_at_unix_s": time.time(),
+            "motion_mode": svc.motion_mode,
+            "tracking": state.tracker_service.status if state.tracker_service else None}
+
+
 @router.get("/servo/status", response_model=ServoStatusResponse)
 def get_servo_status():
     """Ping each servo and return per-joint online/offline status with angle."""
@@ -493,6 +538,8 @@ def start_tracking(req: ServoTrackRequest):
         raise HTTPException(503, "Camera not available")
 
     bbox = tuple(req.bbox) if req.bbox else None
+    if state._camera_disabled:
+        raise HTTPException(409, "Camera is disabled")
     # TODO(reachy): tracker_service receives animation_service and reaches into
     # .robot/.bus_lock internally — port to MotionService accessors when vision
     # tracking goes multi-device.
@@ -509,6 +556,7 @@ def start_tracking(req: ServoTrackRequest):
     return {
         "status": "ok",
         "tracking": True,
+        "searching": s.get("searching", False),
         "target": s.get("target"),
         "bbox": s.get("bbox"),
         "confidence": s.get("confidence"),
@@ -535,6 +583,7 @@ def get_tracking_status():
     return {
         "status": "ok",
         "tracking": s["tracking"],
+        "searching": s.get("searching", False),
         "target": s["target"],
         "bbox": s["bbox"],
         "confidence": s.get("confidence"),

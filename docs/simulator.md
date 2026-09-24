@@ -610,3 +610,42 @@ Guarded by tests that assert the *board* contract, not the laptop one:
 
 Related: [overview.md](overview.md) · [os-server.md](os-server.md) ·
 [agentic/codex.md](agentic/codex.md) · [realtime-voice.md](realtime-voice.md)
+
+### Temporary Pi webcam and microphone
+
+The local `launchcommand` may load `$OS_STATE_DIR/media.env`. Set `SIM_MEDIA=host`, `HAL_CAMERA_INDEX=0`, and `HAL_AUDIO_INPUT_ALSA=plughw:CARD=C1,DEV=0` for the temporary Opal C1. The Lamp definition already declares vision and audio; motors and LEDs remain simulated. `lamp-dev.sh` explicitly forwards media settings into tmux, including an optional `HAL_AUDIO_OUTPUT_DEVICE` override. On this Pi index 0 is HDMI output (speaker playback is unverified); recheck device indices after reconnecting hardware. Remove `media.env` and restart to restore virtual inputs. Host media provides capture; Claude login alone does not configure speech recognition or speech synthesis.
+
+### Pi 5 with Camera Module 3 and simulated motors
+
+Set `HAL_SIMULATE=1`, `HAL_SIM_MEDIA=host`, and `HAL_SIM_CAMERA_DRIVER=rpicam`
+in the boot service environment (`~/.config/lamp/hal.env` on the local Pi).
+The CSI camera uses the existing `rpicam-vid` backend; motors and LEDs remain
+simulated, and host audio selection is unchanged. The default camera driver is
+`host`; virtual media still uses a virtual camera regardless of this override.
+HAL owns the sensor and shares frames through `/camera/stream`, snapshots, and
+OS vision. View the camera at `http://<device-lan-ip>/monitor#camera`.
+The enabled `lamp-stack.target` and user lingering start the stack without login;
+the component service restarts on failure. Save the camera setting in the service
+environment so it persists across reboots. Do not run a second camera owner.
+
+On this Pi, nginx forwards the dashboard at port 80 to the boot-managed Vite
+service on port 5173. `/api/` remains on os-server with authentication intact;
+proxy buffering is disabled for live camera streams.
+
+The Pi preview uses 1280×720 capture and stream width, `HAL_RPICAM_ACTIVE_FPS=40`, `HAL_CAMERA_STREAM_FPS=40`, and `HAL_CAMERA_STREAM_JPEG_QUALITY=85`. These are target rates; actual throughput depends on load. CSI capture returns to 5 fps without consumers. Other devices retain the default 15 fps active capture.
+
+MJPEG pacing includes frame processing in its interval, so JPEG encoding no longer adds an extra delay to each frame.
+
+Virtual sensing does not provide face recognition. Identity resolution treats that as no visible face and falls back to the recognized voice, without logging a missing-perception traceback.
+
+HAL_AUDIO_OUTPUT_DEVICE accepts an integer index or an exact output name. On PipeWire desktops, install pipewire-alsa and set HAL_AUDIO_OUTPUT_DEVICE=pipewire and HAL_AUDIO_OUTPUT_ALSA=pipewire to follow the desktop speaker selection, including Bluetooth. Restart HAL after installing the bridge. Named output selection survives device index changes.
+
+## Pi prototype output preview
+
+The built-in `/simulator` follows `/servo/output` at up to 30 Hz, using the Pi motion service's joint angles directly without browser motion easing. The response identifies the driver, degree units, sample time, tracking state and whether positions are simulated or driver-reported. `physical_feedback_verified` is false: this endpoint does not independently verify hardware feedback. Failed motion reads freeze the last pose and show an unavailable notice after one second; the viewer never substitutes local motion. Camera and audio retain the existing effective host/virtual indicators.
+
+The current simulated Lamp uses the mock motion driver; it does not send CubeMars CAN packets. The separate GL40 bench controller and design simulator are not integrated by this change. A calibrated joint-to-motor mapping and CAN backend remain necessary before these angles can drive the prototype.
+
+The Pi motion style controls call `/servo/affect`, selecting neutral, curious, calm, happy, sad, excited or fearful. They modify existing tracking smoothing/speed, inherit the neutral calibration, and retain the downstream safety speed cap. They do not start tracking, resume held motors, add pose offsets or replace the existing emotion recording controls. GET returns profiles and current affect; POST accepts `name`, `intensity` (0–1, default 1), `transition_s` (0–10, default 0.5).
+
+The optional Lamp display now renders a provisional 240×240 framebuffer on the Pi. Simulation explicitly disables panel hardware initialization. `/display/frame.png` is a lossless encoding of the same rendered frame passed to the display driver, not a second browser renderer; the viewer polls up to 15 Hz and hides failed frames. `/display/snapshot` retains JPEG compatibility. This preserves source RGB pixels, not physical brightness/color, panel pixel-format conversion or every animation frame over the network. Final panel model/resolution remains unconfirmed.

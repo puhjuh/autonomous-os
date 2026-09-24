@@ -225,7 +225,11 @@ def face_user() -> tuple[str, float]:
     try:
         if not sensing_service:
             return "", 0.0
-        fr = sensing_service._perception_orchestrator._processors.face_recognizer
+        # Virtual sensing has no face perception pipeline. This is expected:
+        # return no face so the recognized voice can supply the identity.
+        orchestrator = getattr(sensing_service, "_perception_orchestrator", None)
+        processors = getattr(orchestrator, "_processors", None)
+        fr = getattr(processors, "face_recognizer", None)
         if fr is None:
             return "", 0.0
         # getattr: an older perception.py (partial file sync) has only

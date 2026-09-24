@@ -335,6 +335,13 @@
           while <code>sleepy</code> is current, HAL answers
           <code>ignored</code> and nothing moves.
         </p>
+        <h2>Pi motion style</h2>
+        <div class="grid" id="affect-grid"></div>
+        <p class="foot">Adjusts tracking speed and easing on the Pi. Does not start tracking or release Hold. Pose offsets are not calibrated yet.</p>
+        <p class="foot" id="output-source">Waiting for Pi motion output…</p>
+        <h2>LCD framebuffer</h2>
+        <img id="lcd-frame" width="240" height="240" hidden alt="Exact Pi LCD framebuffer" style="image-rendering:pixelated;max-width:100%;background:black">
+        <p class="foot" id="lcd-status">Waiting for Pi display…</p>
         <h2>Motor control</h2>
         <div class="grid">
           <button data-motor="zero" title="Hold at 0°; blocks play calls">
@@ -1354,6 +1361,7 @@
           method: body ? "POST" : "GET",
           headers: body ? { "content-type": "application/json" } : {},
           body: body ? JSON.stringify(body) : undefined,
+          signal: body ? undefined : AbortSignal.timeout(3000),
         });
         if (!r.ok) throw Error(`${path} → ${r.status}`);
         return r.json();
@@ -1383,15 +1391,13 @@
       }
       async function refresh() {
         try {
-          const [h, p, l, s, sim, emo] = await Promise.all([
+          const [h, l, s, sim, emo] = await Promise.all([
             api("/health"),
-            api("/servo/position"),
             api("/led/color"),
             api("/servo"),
             api("/simulator/state"),
             api("/emotion/status"),
           ]);
-          target = { ...target, ...(p.positions || {}) };
           // null = nothing holding the body. "normal" below is this page's label
           // for that, not a mode HAL has.
           const mode = s.motion_mode || null;
@@ -1470,14 +1476,14 @@
           recordButton.disabled = !audioHost || recordBusy;
           const note = [
             camHost
-              ? "Camera: this Mac webcam (live)."
+              ? "Camera: hardware connected to the HAL host (live)."
               : `Camera: virtual scene (still image).${reasons.camera ? " " + reasons.camera : ""}`,
             audioHost
-              ? "Audio: this Mac speaker + microphone."
+              ? "Audio: HAL host speaker + microphone."
               : `Audio: virtual — tone is silent, recording is a silent WAV.${reasons.audio ? " " + reasons.audio : ""}`,
           ];
           if (!camHost && !audioHost && sim.media_requested !== "host")
-            note.push("Restart with make sim SIM_MEDIA=host to use this Mac.");
+            note.push("Restart with make sim SIM_MEDIA=host to use host hardware.");
           document.querySelector("#media-note").textContent = note.join(" ");
         } catch (e) {
           dot.style.background = "#e75e4e";
@@ -1677,30 +1683,78 @@
         el = 0.27;
         zoom = 1;
       });
-      // Ring pixels on the same fast timer as motion. /led/color reports an
-      // effect's static base color, so polling that made breathing, candle and
-      // rainbow all look like one flat color; this reads the strip buffer.
-      setInterval(async () => {
+      // Await each request before scheduling the next: slow responses must not
+      // pile up or deliver an older pose after a newer one.
+      function pollLatest(task, interval) {
+        const tick = async () => {
+          const started = performance.now();
+          try {
+            if (!document.hidden) await task();
+          } finally {
+            setTimeout(tick, Math.max(0, interval - (performance.now() - started)));
+          }
+        };
+        tick();
+      }
+      pollLatest(async () => {
         try {
           const { pixels } = await api("/simulator/pixels");
           if (pixels && pixels.length) ringPixels = pixels;
-        } catch {
-          // Older HAL without the endpoint: fall back to the /led/color value.
-        }
+        } catch { /* Keep the last displayed ring on a transient failure. */ }
       }, 1000 / 30);
-      // Joint state on its own fast timer, at the rate the driver writes frames.
-      // The rest of the panel (health, LED, media) has no reason to poll that
-      // often, and bundling them meant motion was sampled 3x too slowly to show
-      // the shape of a move.
-      setInterval(async () => {
+      let lastMotionReply = 0;
+      const outputSource = document.getElementById("output-source");
+      pollLatest(async () => {
         try {
-          const p = await api("/servo/position");
+          const p = await api("/servo/output");
           target = { ...target, ...(p.positions || {}) };
+          lastMotionReply = performance.now();
+          outputSource.textContent = `Pi · ${p.driver} · ${p.position_kind} joint angles · no verified motor feedback`;
+          const affect = p.tracking?.affect?.target || "neutral";
+          document.querySelectorAll("#affect-grid button").forEach(b => {
+            b.classList.toggle("primary", b.textContent === affect);
+          });
         } catch {
-          // refresh() owns reporting connection loss; stale pose is fine here.
+          if (performance.now() - lastMotionReply > 1000)
+            outputSource.textContent = "Pi motion unavailable — pose frozen at last received output";
         }
       }, 1000 / 30);
-      setInterval(refresh, 100);
+      api("/servo/affect").then(({ profiles }) => {
+        const grid = document.getElementById("affect-grid");
+        Object.keys(profiles).forEach(name => {
+          const button = document.createElement("button");
+          button.textContent = name;
+          button.onclick = () => act(`Motion style: ${name}`, "/servo/affect", { name });
+          grid.append(button);
+        });
+      }).catch(() => { document.getElementById("affect-grid").textContent = "Motion styles unavailable"; });
+      // One lossless image request at a time, from the hardware renderer's buffer.
+      const lcdFrame = document.getElementById("lcd-frame");
+      const lcdStatus = document.getElementById("lcd-status");
+      pollLatest(async () => {
+        let url;
+        try {
+          const response = await fetch("/display/frame.png", { cache: "no-store", signal: AbortSignal.timeout(3000) });
+          if (!response.ok) throw Error("Display unavailable");
+          url = URL.createObjectURL(await response.blob());
+          const image = new Image();
+          image.src = url;
+          await image.decode();
+          const previous = lcdFrame.dataset.objectUrl;
+          lcdFrame.src = url;
+          lcdFrame.dataset.objectUrl = url;
+          url = null;
+          if (previous) URL.revokeObjectURL(previous);
+          lcdFrame.hidden = false;
+          lcdStatus.textContent = `${image.naturalWidth} × ${image.naturalHeight} · Pi framebuffer · panel appearance unverified`;
+        } catch {
+          lcdStatus.textContent = "LCD preview unavailable — no live frame";
+          lcdFrame.hidden = true;
+        } finally {
+          if (url) URL.revokeObjectURL(url);
+        }
+      }, 1000 / 15);
+      pollLatest(refresh, 1000);
       refresh();
       loadControls().catch((e) => {
         action.textContent = `✕ controls unavailable: ${e.message}`;

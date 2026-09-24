@@ -3,6 +3,7 @@ import { usePolling } from "../../hooks/usePolling";
 import { S } from "./styles";
 import { hwUrl } from "@/lib/api";
 import { HW } from "./types";
+import { CameraControls } from "./CameraControls";
 
 interface TrackStatus {
   tracking: boolean;
@@ -16,9 +17,6 @@ export function CameraSection({
 }: {
   displayTs: number;
 }) {
-  // Lazy initializer: the clock is read once on mount, not on every render.
-  const [snapTs, setSnapTs] = useState(() => Date.now());
-  const [snapError, setSnapError] = useState(false);
   const [streamError, setStreamError] = useState(false);
   // Bumped to force the MJPEG <img> to remount with a fresh connection —
   // on enable and on transient-error retry. Without this, an error latched
@@ -35,8 +33,9 @@ export function CameraSection({
   });
   const zoomTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [track, setTrack] = useState<TrackStatus>({ tracking: false, target: null, bbox: null, confidence: null });
-  const [trackTarget, setTrackTarget] = useState("object");
+  const [trackTarget, setTrackTarget] = useState("person");
   const [trackBbox, setTrackBbox] = useState("");
+  const [trackError, setTrackError] = useState<string | null>(null);
 
   const [streamActive, setStreamActive] = useState(!document.hidden);
   useEffect(() => {
@@ -47,15 +46,12 @@ export function CameraSection({
 
   // When the camera transitions to enabled (via the toggle here or an
   // auto-enable detected by polling), drop any stale error latch and remount
-  // the stream/snapshot with a fresh connection so live video comes back
+  // the stream with a fresh connection so live video comes back
   // immediately — no page refresh needed.
   useEffect(() => {
     if (!cameraDisabled) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- this reacts to a DEVICE state transition (the poll seeing the camera come back), not to a prop that could be derived during render. Bumping streamEpoch is what forces the MJPEG <img> to remount with a fresh connection; there is no render-time equivalent.
       setStreamError(false);
-      setSnapError(false);
       setStreamEpoch((e) => e + 1);
-      setSnapTs(Date.now());
     }
   }, [cameraDisabled]);
 
@@ -126,6 +122,7 @@ export function CameraSection({
   };
 
   const startTracking = async () => {
+    setTrackError(null);
     const labels = trackTarget.split(",").map((s) => s.trim()).filter(Boolean);
     const body: Record<string, unknown> = {};
     if (labels.length === 1) body.target = labels[0];
@@ -138,15 +135,19 @@ export function CameraSection({
     }
     if (!body.target && !body.bbox) return;
     try {
-      const r = await fetch(`${HW}/servo/track`, {
+      const response = await fetch(`${HW}/servo/track`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
-      }).then((x) => x.json());
+      });
+      const r = await response.json();
+      if (!response.ok) {
+        const message = typeof r.detail === "string" ? r.detail : r.message;
+        throw new Error(typeof message === "string" ? message : `Tracking failed (${response.status})`);
+      }
       setTrack({ tracking: !!r.tracking, target: r.target, bbox: r.bbox, confidence: r.confidence ?? null });
-    } catch {
-      // Start failed: don't fake a tracking state the device isn't in — the
-      // status poll reports what actually happened.
+    } catch (error) {
+      setTrackError(error instanceof Error ? error.message : "Could not start tracking.");
     }
   };
 
@@ -160,21 +161,15 @@ export function CameraSection({
     }
   };
 
-  const refreshSnapshot = () => {
-    setSnapError(false);
-    setSnapTs(Date.now());
-  };
-
   const statusText = cameraDisabled
     ? (manualOverride ? "Disabled by you" : "Auto-disabled (scene/emotion)")
     : "Streaming";
-  const statusColor = cameraDisabled ? "var(--lm-red)" : "var(--lm-green)";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <div className="lm-grid-2">
 
-        {/* Live Stream card with Snapshot embedded as a sub-card */}
+        {/* Live Stream card */}
         <div style={S.card}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 10, flexWrap: "wrap" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -191,7 +186,7 @@ export function CameraSection({
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               {mode.w && mode.h && (
                 <span
-                  title="Actual capture mode negotiated with the camera"
+                  title="Capture size and requested frame rate; measured delivery is shown in Camera Settings"
                   style={{
                     fontSize: 10, padding: "2px 7px", borderRadius: 4,
                     background: "var(--lm-surface)", border: "1px solid var(--lm-border)",
@@ -254,7 +249,7 @@ export function CameraSection({
             >Reset</button>
           </div>
 
-          {/* Stream frame with Snapshot mini-card overlaid at bottom-right (picture-in-picture). */}
+          {/* Live camera frame. */}
           <div style={{ position: "relative" }}>
             <MediaFrame
               disabled={cameraDisabled}
@@ -275,81 +270,7 @@ export function CameraSection({
               />
             </MediaFrame>
 
-            {/* Snapshot PiP — sub-card pinned to bottom-right of stream */}
-            <div style={{
-              position: "absolute",
-              bottom: 8,
-              right: 8,
-              width: 130,
-              borderRadius: 6,
-              border: `1px solid ${statusColor === "var(--lm-green)" ? "rgba(52,211,153,0.4)" : "var(--lm-border)"}`,
-              background: "var(--lm-card)",
-              boxShadow: "0 2px 8px rgba(0,0,0,0.4)",
-              padding: 6,
-              display: "flex",
-              flexDirection: "column",
-              gap: 4,
-            }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 4 }}>
-                <span style={{
-                  fontSize: 9, fontWeight: 700, letterSpacing: "0.05em",
-                  color: "var(--lm-text-dim)", textTransform: "uppercase",
-                }}>Snapshot</span>
-                <div style={{ display: "flex", gap: 3 }}>
-                  <a
-                    href={cameraDisabled ? undefined : hwUrl(`/camera/snapshot?t=${snapTs}`)}
-                    download={`snapshot-${new Date(snapTs).toISOString().replace(/[:.]/g, "-")}.jpg`}
-                    title="Download snapshot"
-                    aria-disabled={cameraDisabled}
-                    onClick={(e) => { if (cameraDisabled) e.preventDefault(); }}
-                    style={{
-                      fontSize: 9, padding: "2px 6px", borderRadius: 4,
-                      background: "var(--lm-surface)", border: "1px solid var(--lm-border)",
-                      color: "var(--lm-text-dim)", cursor: cameraDisabled ? "not-allowed" : "pointer",
-                      opacity: cameraDisabled ? 0.5 : 1, textDecoration: "none",
-                      display: "inline-flex", alignItems: "center", justifyContent: "center",
-                      minWidth: 16, lineHeight: 1,
-                    }}
-                  >↓</a>
-                  <button
-                    onClick={refreshSnapshot}
-                    disabled={cameraDisabled}
-                    title="Capture fresh snapshot"
-                    style={{
-                      fontSize: 9, padding: "2px 6px", borderRadius: 4,
-                      background: "var(--lm-surface)", border: "1px solid var(--lm-border)",
-                      color: "var(--lm-text-dim)", cursor: cameraDisabled ? "not-allowed" : "pointer",
-                      opacity: cameraDisabled ? 0.5 : 1,
-                    }}
-                  >↻</button>
-                </div>
-              </div>
-              <div style={{
-                width: "100%",
-                aspectRatio: "4 / 3",
-                borderRadius: 4,
-                background: "var(--lm-surface)",
-                border: "1px solid var(--lm-border)",
-                overflow: "hidden",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}>
-                {cameraDisabled || snapError ? (
-                  <span style={{ fontSize: 9, color: "var(--lm-text-muted)" }}>
-                    {cameraDisabled ? "off" : "—"}
-                  </span>
-                ) : (
-                  <img
-                    src={hwUrl(`/camera/snapshot?t=${snapTs}`)}
-                    alt="snapshot"
-                    style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
-                    onError={() => setSnapError(true)}
-                    onLoad={() => setSnapError(false)}
-                  />
-                )}
-              </div>
-            </div>
+
           </div>
         </div>
 
@@ -410,8 +331,14 @@ export function CameraSection({
             </div>
 
             <div style={{ fontSize: 10.5, color: "var(--lm-text-muted)", lineHeight: 1.5 }}>
-              One label or comma-separated synonyms. Bbox optional — skips YOLO detection.
+              Use a specific name such as person, cup, or bottle, visible in the camera. Bbox optional — skips detection.
             </div>
+
+            {trackError && (
+              <div role="alert" style={{ fontSize: 11, color: "var(--lm-red)" }}>
+                {trackError}
+              </div>
+            )}
 
             {track.tracking && (
               <div style={{
@@ -436,6 +363,7 @@ export function CameraSection({
           </div>
         </div>
       </div>
+      <CameraControls onApplied={() => { setStreamError(false); setStreamEpoch((epoch) => epoch + 1); }} />
     </div>
   );
 }

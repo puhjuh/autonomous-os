@@ -34,8 +34,10 @@ import numpy.typing as npt
 
 from hal import app_state
 from hal.drivers.tracking import constants as C
+from hal.drivers.tracking.affect import AffectState
 from hal.safety.policy import cap_speed_dps
 from hal.drivers.tracking.detection import ObjectDetector
+from hal.drivers.tracking.box_stability import BoxSmoother, DetectionResult, corrected_tracker
 from hal.drivers.tracking.filters import AlphaBetaFilter2D, PID, soft_deadband
 from hal.drivers.tracking.servo_follow import ServoFollower
 from hal.drivers.tracking.vit_tracker import (
@@ -59,6 +61,7 @@ class TrackingState:
     target_label: str = ""
     tracker: Optional[cv2.Tracker] = None
     bbox: Optional[Tuple[int, int, int, int]] = None
+    display_bbox: Optional[Tuple[int, int, int, int]] = None
     confidence: Optional[float] = None
     low_confidence_frames: int = 0
     running: threading.Event = field(default_factory=threading.Event)
@@ -75,10 +78,14 @@ class TrackerService:
         # both enter detect_object (5-7s) and end up spawning two tracking
         # threads that fight over the same servo state.
         self._start_lock = threading.Lock()
+        self._watch_stop = threading.Event()
+        self._watch_stop.set()
+        self._watch_thread = None
         self.last_error: str = ""
         self._yaw_pid = PID(C.PID_YAW_KP, C.PID_YAW_KI, C.PID_YAW_KD)
         self._pitch_pid = PID(C.PID_PITCH_KP, C.PID_PITCH_KI, C.PID_PITCH_KD)
         self._follower = ServoFollower()
+        self._affect = AffectState()
         # Area (px²) of the last trusted bbox lock — baseline for bloat detection.
         self._track_init_area: float = 0.0
         # Remote detections mirror their confidence into the session status.
@@ -88,16 +95,32 @@ class TrackerService:
 
     @property
     def is_tracking(self) -> bool:
-        return self._state.running.is_set()
+        return self._state.running.is_set() or not self._watch_stop.is_set()
+
+    def set_affect(self, name: str, intensity: float = 1.0,
+                   transition_s: float = 0.5) -> None:
+        """Set tracking style without starting tracking or changing its target."""
+        self._affect.set(name, intensity, transition_s)
+
+    def _apply_motion_profile(self, saccade_mode: bool) -> None:
+        smooth_time, speed = self._affect.resolve(
+            C.SACCADE_SMOOTH_TIME if saccade_mode else C.SERVO_SMOOTH_TIME,
+            C.SACCADE_MAX_SPEED_DPS if saccade_mode else C.SERVO_MAX_SPEED_DPS,
+        )
+        self._follower.set_profile(
+            smooth_time, cap_speed_dps(app_state.safety_policy, speed))
 
     @property
     def status(self) -> dict:
         s = self._state
+        locked = s.running.is_set()
         return {
-            "tracking": s.running.is_set(),
+            "tracking": self.is_tracking,
+            "searching": self.is_tracking and not locked,
             "target": s.target_label or None,
-            "bbox": list(s.bbox) if s.bbox else None,
-            "confidence": s.confidence,
+            "bbox": list(s.display_bbox or s.bbox) if locked and s.bbox else None,
+            "confidence": s.confidence if locked else None,
+            "affect": self._affect.status,
         }
 
     def detect_object(self, frame: npt.NDArray[np.uint8], target: str,
@@ -135,9 +158,34 @@ class TrackerService:
             return False
         try:
             self.stop()
+            if target_label.strip().lower() in {"face", "human face", "khuôn mặt", "mặt"}:
+                self._state = TrackingState(target_label=target_label)
+                self._watch_stop.clear()
+                self._watch_thread = threading.Thread(
+                    target=self._watch_face,
+                    args=(bbox, target_label, camera_capture, animation_service),
+                    daemon=True, name="face-watch",
+                )
+                self._watch_thread.start()
+                return True
             return self._start_locked(bbox, target_label, camera_capture, animation_service)
         finally:
             self._start_lock.release()
+
+    def _watch_face(self, bbox, target_label, camera_capture, animation_service):
+        """Reacquire after a completed session; never overlap tracker workers."""
+        while not self._watch_stop.is_set():
+            try:
+                self._start_locked(bbox, target_label, camera_capture, animation_service)
+            except Exception:
+                logger.exception("Face acquisition failed; will retry")
+            bbox = None
+            thread = self._state.thread
+            if thread is not None:
+                while thread.is_alive() and not self._watch_stop.is_set():
+                    thread.join(timeout=0.2)
+            if self._watch_stop.wait(2.0):
+                break
 
     def _start_locked(
         self,
@@ -249,9 +297,14 @@ class TrackerService:
 
     def stop(self):
         """Stop the current tracking session."""
+        self._watch_stop.set()
+        watcher = self._watch_thread
+        if watcher and watcher.is_alive():
+            watcher.join(timeout=10.0)
+            if watcher.is_alive():
+                raise RuntimeError("face acquisition worker did not stop")
+        self._watch_thread = None
         with self._lock:
-            if not self._state.running.is_set():
-                return
             self._state.running.clear()
             t = self._state.thread
 
@@ -269,7 +322,7 @@ class TrackerService:
     def update_bbox(self, bbox: Tuple[int, int, int, int], camera_capture=None) -> bool:
         """Re-init the active session's tracker to a caller-supplied bbox
         (x, y, w, h in original camera coords). Serves POST /servo/track/update."""
-        if not self.is_tracking:
+        if not self._state.running.is_set():
             return False
         if camera_capture is None:
             logger.warning("update_bbox: camera not available")
@@ -292,6 +345,7 @@ class TrackerService:
         state = self._state
         state.tracker = tracker
         state.bbox = bbox
+        state.display_bbox = None
         self._track_init_area = float(bbox[2] * bbox[3])
         logger.info("update_bbox: tracker re-initialized to %s", bbox)
         return True
@@ -299,8 +353,26 @@ class TrackerService:
     # --- Internal tracking loop ---
 
     def _track_loop(self, camera_capture, animation_service):
+        """Keep capture at active FPS for the entire session, even without a UI."""
+        acquire = getattr(camera_capture, "acquire_consumer", None)
+        release = getattr(camera_capture, "release_consumer", None)
+        managed = callable(acquire) and callable(release)
+        if managed:
+            acquire()
+        try:
+            self._track_loop_active(camera_capture, animation_service)
+        finally:
+            if managed:
+                release()
+
+    def _track_loop_active(self, camera_capture, animation_service):
         """Background loop: tracker update at FAST_LOOP_FPS + YOLO background correction."""
         state = self._state
+        fixed_camera = getattr(animation_service, "tracking_fixed_camera", False)
+        loop_fps = 30 if fixed_camera else C.FAST_LOOP_FPS
+        if fixed_camera:
+            from hal.presets import AIM_CENTER, AIM_PRESETS
+            camera_reference = dict(AIM_PRESETS[AIM_CENTER])
 
         animation_service._hold_mode = True
         animation_service._tracking_active = True
@@ -342,6 +414,8 @@ class TrackerService:
         # detections, and rate-limit reinits.
         recent_yolo_areas: list[float] = []
         last_reinit_t: float = 0.0
+        box_smoother = BoxSmoother()
+        last_capture_ts = 0.0
 
         # Alpha-beta centroid filter (smoothed, velocity-led, outlier-gated offset).
         ab_filter = AlphaBetaFilter2D(C.AB_ALPHA, C.AB_BETA, C.AB_GATE_PX)
@@ -391,6 +465,8 @@ class TrackerService:
                             if vit_init(_t, _f, _bbox) is not False:
                                 state.tracker = _t
                                 state.bbox = _bbox
+                                box_smoother.reset()
+                                state.display_bbox = None
                                 self._track_init_area = float(_bbox[2] * _bbox[3])
                                 logger.info("[retry] tracker reinit OK bbox=%s", _bbox)
                         except Exception as _e:
@@ -409,18 +485,18 @@ class TrackerService:
                 except queue.Empty: break
             return True
 
-        def _fire_yolo(frame_snap: npt.NDArray[np.uint8]) -> None:
+        def _fire_yolo(frame_snap: npt.NDArray[np.uint8], captured_at: float) -> None:
             t0_yolo = time.perf_counter()
-            result = self.detect_object(frame_snap, state.target_label, strict=False)
-            t_yolo_ms = (time.perf_counter() - t0_yolo) * 1000
-            logger.info("[yolo-bg] detect=%.0fms result=%s bbox=%s target='%s'",
-                        t_yolo_ms, "found" if result is not None else "missed", result, state.target_label)
-            if result is None:
-                logger.info("[tracking_yolo_response] target='%s' found=False latency=%.0fms", state.target_label, t_yolo_ms)
             try:
-                yolo_q.put_nowait(result)
+                result = self.detect_object(frame_snap, state.target_label, strict=False)
+                t_yolo_ms = (time.perf_counter() - t0_yolo) * 1000
+                logger.info("[yolo-bg] detect=%.0fms result=%s bbox=%s target='%s'",
+                            t_yolo_ms, "found" if result is not None else "missed", result, state.target_label)
+                yolo_q.put_nowait(DetectionResult(result, frame_snap, captured_at))
             except queue.Full:
                 pass
+            except Exception:
+                logger.exception("Background detection failed; keeping current tracker")
             finally:
                 yolo_running.clear()
 
@@ -430,15 +506,21 @@ class TrackerService:
 
                 # This is a wall-clock session limit. Check before reading the
                 # frame so a stalled camera cannot keep tracking alive forever.
-                if time.perf_counter() - track_start_t > C.MAX_TRACK_DURATION_S:
+                if not fixed_camera and time.perf_counter() - track_start_t > C.MAX_TRACK_DURATION_S:
                     logger.warning("Tracking timeout after %ds, stopping", C.MAX_TRACK_DURATION_S)
                     break
 
+                # Skip duplicate captures rather than feeding ViT the same image.
+                capture_ts = getattr(camera_capture, "last_frame_ts", 0.0)
+                if capture_ts and capture_ts == last_capture_ts:
+                    time.sleep(1.0 / loop_fps)
+                    continue
                 frame = camera_capture.last_frame
                 if frame is None:
-                    time.sleep(1.0 / C.FAST_LOOP_FPS)
+                    time.sleep(1.0 / loop_fps)
                     continue
 
+                last_capture_ts = capture_ts
                 h_fr, w_fr = frame.shape[:2]
                 t_csrt0 = time.perf_counter()
                 ok, new_bbox = vit_update(state.tracker, frame)
@@ -465,7 +547,7 @@ class TrackerService:
                                     C.LOW_CONF_STOP_COUNT, state.target_label)
                         # Don't glide on toward the stale goal while skipping.
                         self._follower.hold()
-                        time.sleep(1.0 / C.FAST_LOOP_FPS)
+                        time.sleep(1.0 / loop_fps)
                         continue
 
                 if not ok:
@@ -475,12 +557,12 @@ class TrackerService:
                         # First miss: force YOLO immediately instead of waiting for interval
                         last_yolo_t = 0
                     coast_speed = (ab_filter.vx ** 2 + ab_filter.vy ** 2) ** 0.5
-                    if miss_count <= C.MISS_COAST_FRAMES and coast_speed > C.VFF_MOVING_MIN_PXS:
+                    if not fixed_camera and miss_count <= C.MISS_COAST_FRAMES and coast_speed > C.VFF_MOVING_MIN_PXS:
                         # Target was moving when ViT lost it (fast wave, motion
                         # blur) — coast along its last velocity to re-catch it
                         # instead of stopping dead, which guarantees it exits
                         # the frame before the redetect lands.
-                        dt_c = 1.0 / C.FAST_LOOP_FPS
+                        dt_c = 1.0 / loop_fps
                         deg_per_px = C.CAMERA_FOV_DEG / w_fr
                         _lim = C.PID_OUTPUT_MAX_DEG
                         self._follower.command_pid(
@@ -490,21 +572,26 @@ class TrackerService:
                         motion_state = "COAST"
                         logger.info("[coast] miss %d — panning along v=(%.0f,%.0f)px/s",
                                     miss_count, ab_filter.vx, ab_filter.vy)
-                        time.sleep(1.0 / C.FAST_LOOP_FPS)
+                        time.sleep(1.0 / loop_fps)
                         continue
                     # Sweep base_yaw to search for object — alternates direction every 8 frames.
                     # Route through the servo goal so the follow worker drives it (one owner).
                     _sweep_dir = 1 if ((miss_count - 1) // 8) % 2 == 0 else -1
-                    self._follower.sweep_yaw(2.0 * _sweep_dir)
+                    if fixed_camera:
+                        # Moving the simulated body cannot search a fixed webcam.
+                        self._follower.hold()
+                    else:
+                        self._follower.sweep_yaw(2.0 * _sweep_dir)
                     if miss_count >= C.YOLO_MAX_MISS:
                         if _do_retry():
                             continue
                         break
-                    time.sleep(1.0 / C.FAST_LOOP_FPS)
+                    time.sleep(1.0 / loop_fps)
                     continue
 
                 miss_count = 0
                 state.bbox = tuple(int(v) for v in new_bbox)
+                state.display_bbox = box_smoother.update(state.bbox, time.monotonic())
                 bx, by, bw, bh = state.bbox
 
                 frame_area = float(h_fr * w_fr)
@@ -532,7 +619,8 @@ class TrackerService:
                         yolo_running.set()
                         snap = frame.copy()
                         threading.Thread(
-                            target=_fire_yolo, args=(snap,), daemon=True, name="yolo-worker"
+                            target=_fire_yolo, args=(snap, capture_ts or time.monotonic()),
+                        daemon=True, name="yolo-worker"
                         ).start()
 
                 cx_obj = bx + bw / 2.0
@@ -592,13 +680,8 @@ class TrackerService:
                 # permission. A body that declares a lower motion.max_speed wins
                 # — this is the only place the loop's speed is chosen, so it is
                 # the whole gate.
-                self._follower.set_profile(
-                    C.SACCADE_SMOOTH_TIME if saccade_mode else C.SERVO_SMOOTH_TIME,
-                    cap_speed_dps(
-                        app_state.safety_policy,
-                        C.SACCADE_MAX_SPEED_DPS if saccade_mode else C.SERVO_MAX_SPEED_DPS,
-                    ),
-                )
+                # Apply affect before the safety cap so style cannot raise it.
+                self._apply_motion_profile(saccade_mode)
                 # Tiered dead zone: true zero inside INNER, lazy creep toward
                 # center up to the outer edge, full error beyond (continuous).
                 err_dx = soft_deadband(dx, w_fr * C.DEAD_ZONE_INNER_PCT,
@@ -651,7 +734,7 @@ class TrackerService:
                     logger.info("[bbox] untrusted (%s): area=%.0f%% cur_px=%.0f trust_px=%.0f — HOLD servo, await YOLO relock",
                                 "overflow" if bbox_ratio >= C.BBOX_FREEZE_RATIO else "bloat>%.1fx" % C.BLOAT_HOLD_MULT,
                                 bbox_ratio * 100, cur_area_px, self._track_init_area)
-                elif centered and not moving_ff:
+                elif centered and not moving_ff and not fixed_camera:
                     # Truly centered AND still — hold and let the integral clear.
                     # (A centered but MOVING target falls through to keep panning
                     # on feedforward so it never drifts out before the PID reacts.)
@@ -679,6 +762,11 @@ class TrackerService:
                     # YuNet miss while ViT keeps a good lock).
                     motion_state = "WAIT-YOLO"
                     self._follower.hold()
+                elif fixed_camera:
+                    self._follower.command_fixed_camera(dx, dy, w_fr, camera_reference)
+                    motion_state = "FIXED-CAMERA"
+                    servo_count += 1
+                    last_servo_t = now_t
                 elif (now_t - last_servo_t) >= C.SERVO_COOLDOWN_S:
                     motion_state = "SACCADE" if saccade_mode else "CHASING"
                     # Position PID on the soft-deadbanded error. Yaw sign: dx>0
@@ -691,7 +779,7 @@ class TrackerService:
                     # speed with zero position error. deg_per_px is the same on
                     # both axes for square pixels (vert FOV = horiz FOV·h/w).
                     dt_fire = (min(C.VFF_MAX_DT_S, now_t - last_servo_t)
-                               if last_servo_t > 0 else 1.0 / C.FAST_LOOP_FPS)
+                               if last_servo_t > 0 else 1.0 / loop_fps)
                     deg_per_px = C.CAMERA_FOV_DEG / w_fr
                     yaw_ff = C.VFF_GAIN * vx_f * deg_per_px * dt_fire
                     pitch_ff = C.VFF_GAIN * vy_f * deg_per_px * dt_fire
@@ -713,7 +801,11 @@ class TrackerService:
                 # ViT to bbox-bloat after re-init, which "teleports" the centroid
                 # and lurches the servo (the main cause of jerky tracking).
                 try:
-                    yolo_bbox = yolo_q.get_nowait()
+                    detection = yolo_q.get_nowait()
+                    # Stale detections cannot confirm the current lock or move it.
+                    if time.monotonic() - detection.captured_at > 2.0:
+                        raise queue.Empty
+                    yolo_bbox = detection.bbox
                     if yolo_bbox is not None:
                         miss_count = 0
                         last_yolo_confirm_t = time.perf_counter()
@@ -766,21 +858,18 @@ class TrackerService:
                             logger.info("[drift-correct] reinit reason: bloated=%s diverged=%s lost=%s "
                                         "cur_area=%d yolo_area=%d center_dist=%.0fpx",
                                         bloated, diverged, clearly_lost, cur_area, yolo_area, center_dist)
-                            ab_filter.reset()   # centroid legitimately jumps to YOLO bbox → re-seed filter
-                            new_tracker = create_tracker()
-                            if new_tracker is not None:
-                                reinit_frame = camera_capture.last_frame
-                                if reinit_frame is not None:
-                                    try:
-                                        ok_r = vit_init(new_tracker, reinit_frame, yolo_bbox)
-                                        if ok_r is not False:
-                                            state.tracker = new_tracker
-                                            state.bbox = yolo_bbox
-                                            self._track_init_area = float(yolo_bbox[2] * yolo_bbox[3])
-                                            last_reinit_t = now_reinit
-                                            motion_state = "INIT"
-                                    except Exception as e:
-                                        logger.warning("YOLO re-init failed: %s", e)
+                            reinit_frame = camera_capture.last_frame
+                            if reinit_frame is not None:
+                                correction = corrected_tracker(
+                                    detection, reinit_frame, create_tracker, vit_init, vit_update,
+                                    time.monotonic(),
+                                )
+                                if correction is not None:
+                                    state.tracker, state.bbox = correction
+                                    self._track_init_area = float(state.bbox[2] * state.bbox[3])
+                                    ab_filter.reset()
+                                    last_reinit_t = now_reinit
+                                    motion_state = "INIT"
                         else:
                             logger.debug("[drift-correct] tracker OK / debounced "
                                          "(bloated=%s diverged=%s cooldown_ok=%s "
@@ -810,7 +899,8 @@ class TrackerService:
                     yolo_running.set()
                     snap = frame.copy()
                     threading.Thread(
-                        target=_fire_yolo, args=(snap,), daemon=True, name="yolo-worker"
+                        target=_fire_yolo, args=(snap, capture_ts or time.monotonic()),
+                        daemon=True, name="yolo-worker"
                     ).start()
 
                 # Log every ~2 seconds.
@@ -845,7 +935,7 @@ class TrackerService:
                     fps_t0 = time.perf_counter()
 
                 dt = time.perf_counter() - t0
-                sleep_time = (1.0 / C.FAST_LOOP_FPS) - dt
+                sleep_time = (1.0 / loop_fps) - dt
                 if sleep_time > 0:
                     time.sleep(sleep_time)
 

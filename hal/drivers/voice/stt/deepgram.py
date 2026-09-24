@@ -4,6 +4,7 @@ Deepgram STT provider — streaming speech-to-text via Deepgram WebSocket API.
 Supports both v1 (nova-2) and v2 (flux) endpoints, auto-detected by model name.
 
 Optional env (same semantics as darren_stt):
+  DEEPGRAM_MODEL — streaming model override (default flux-general-en)
   DEEPGRAM_ENDPOINTING_MS — override endpointing ms (default 1500)
   DEEPGRAM_INTERIM_RESULTS — set true/1/yes for partial transcripts (default false)
 """
@@ -18,7 +19,7 @@ from hal.drivers.voice.stt.provider import STTProvider, STTSession
 
 logger = logging.getLogger("hal.voice.stt")
 
-DEFAULT_MODEL = "flux-general-en"
+DEFAULT_MODEL = os.environ.get("DEEPGRAM_MODEL", "").strip() or "flux-general-en"
 DEFAULT_LANGUAGE = LANG_EN
 
 DEFAULT_INTERIM_RESULTS = "true"

@@ -197,9 +197,8 @@ class ServoFollower:
     def read_initial_positions(self, animation_service) -> None:
         """Read servo positions from the bus once; track internally after this."""
         try:
-            from hal.drivers.motors.animation_service import _motor_positions_from_bus
-            with animation_service.bus_lock:
-                init_pos = _motor_positions_from_bus(animation_service.robot)
+            # Both physical and simulated motion services expose joint positions.
+            init_pos = animation_service.get_positions()
             with self._lock:
                 self._yaw = init_pos.get("base_yaw.pos", 0.0)
                 self._base_pitch = init_pos.get("base_pitch.pos", 0.0)
@@ -268,6 +267,22 @@ class ServoFollower:
         )
 
     # --- vision-loop commands ---
+
+    def command_fixed_camera(self, dx: float, dy: float, width: float,
+                             reference: Dict[str, float]) -> None:
+        """Aim virtual joints at a fixed webcam bearing, without accumulating error.
+
+        The reference is the simulator's neutral pose, not its last command:
+        moving virtual motors cannot change the observed pixel offset.
+        """
+        if width <= 0:
+            return
+        degrees_per_pixel = C.CAMERA_FOV_DEG / width
+        yaw = max(-C.CAMERA_FOV_DEG / 2, min(C.CAMERA_FOV_DEG / 2, dx * degrees_per_pixel))
+        pitch = max(-C.CAMERA_FOV_DEG / 2, min(C.CAMERA_FOV_DEG / 2, dy * degrees_per_pixel))
+        target = dict(distribute_pitch(reference, pitch))
+        target["base_yaw.pos"] = max(C.YAW_MIN, min(C.YAW_MAX, reference["base_yaw.pos"] + yaw))
+        self.set_goal(target)
 
     def command_pid(self, yaw_step: float, pitch_correction: float) -> None:
         """Apply PID outputs. yaw → base_yaw. pitch → distributed across base/elbow/wrist.

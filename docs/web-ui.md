@@ -477,9 +477,12 @@ Turn Pipeline grouping behavior:
 
 ### 5.4 Camera Section
 
+The Camera panel at `/monitor#camera` shows an unobstructed live stream. The snapshot picture-in-picture and its capture/download controls have been removed; the snapshot API remains available to OS vision and other consumers.
+
 - **Camera Stream**: MJPEG live stream from `GET /hw/camera/stream` (downscaled + throttled; default ~10fps, ~320px width). The `<img>` remounts with a fresh connection (bumped `streamEpoch` cache-buster) whenever the camera transitions to enabled — via the Enable button or an auto-enable picked up by polling — so live video returns immediately without a page refresh. A stream error that lands right after enable (HAL's capture loop needs ~1-2s to deliver the first frame) is not latched: it auto-retries on a short delay until a frame loads.
 - **Display Eyes (GC9A01)**: Round 1.28" screen snapshot from `GET /hw/display/snapshot`, displayed as circle with amber glow. Has Refresh button.
-- **Camera Snapshot**: Static image from `GET /hw/camera/snapshot`, with Capture button to take new shot.
+
+- **Camera Settings**: On supported Raspberry Pi cameras, `GET /hw/camera/controls` supplies current settings, automatic defaults, requested/measured capture fps, and latest frame age in milliseconds. Controls include frame rate (1–40 fps), exposure compensation, normal/sport exposure, center/spot/average metering, exposure time and gain (0 = automatic), autofocus/manual focus, white balance, 50/60 Hz flicker reduction, and HDR. Edits stay local until **Apply** sends changed fields to `POST /hw/camera/controls`; polling never overwrites pending edits. **Reset to Auto** posts `{ "reset": true }`, restoring all camera defaults including the 30 fps capture setting. Applying or resetting briefly interrupts a running preview, which reconnects automatically; errors appear in the card. Unsupported cameras hide this card. Settings persist across HAL restarts and reboots: `HAL_RPICAM_CONTROLS_PATH` overrides the path, otherwise `HAL_STATE_DIR/rpicam-controls.json` is used when configured, falling back to `${XDG_STATE_HOME:-~/.local/state}/lamp/rpicam-controls.json`; changing controls does not enable a disabled camera. Aperture is fixed; longer exposure can blur moving faces. Measured capture fps is separate from the throttled browser preview rate.
 
 ### 5.5 Logs Section
 
@@ -708,3 +711,7 @@ swap runs without `--delete`, so device-local paths outside the repo survive.
 These are for a single device on your LAN. To ship to the fleet, use the OTA
 path instead — `make upload-hal` then `make promote-hal`, which versions the
 artifact and rolls it out.
+
+Camera tracking defaults to `person`. Choose a specific visible target, such as `person`, `cup`, or `bottle`; the generic `object` label requires a configured remote detector. Failed start requests display the server error inside the tracking card.
+
+Local Piper speech output starts without cloud API credentials when Piper is the saved TTS provider. Install the engine and a voice, select Piper, and save before testing on a fresh installation.

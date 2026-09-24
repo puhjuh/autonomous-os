@@ -935,3 +935,21 @@ curl -X POST 127.0.0.1:5001/servo/bearing/reset
 Lệnh đặt lại cũng được nối với giọng nói qua `skills/servo-control` — *"tôi đã dời bạn đi"*, *"bạn
 đang ở chỗ mới"*. Việc phát hiện tự động cần vài lần thất bại mới hành động, điều đó đúng để tránh báo
 động giả nhưng chậm khi người dùng vốn đã BIẾT là lamp bị dời.
+
+### Động cơ mô phỏng với camera thật
+
+Với `HAL_SIMULATE=1` và `HAL_SIM_MEDIA=host`, tính năng theo dõi dùng webcam thật và bộ điều hợp động cơ trong bộ nhớ. Đọc vị trí, lệnh chuyển động và ghi thanh ghi theo dõi chỉ tác động đến khớp ảo; không cần động cơ thật. Hoạt ảnh chờ nhường quyền cho theo dõi. Webcam cố định và độc lập với đầu ảo. Theo dõi ánh xạ hướng mục tiêu thành tư thế tuyệt đối quanh tư thế trung tâm của mô phỏng (dùng góc nhìn ngang camera được cấu hình là 60 độ), rồi di chuyển mượt đến tư thế đó. Quan sát lệch tâm lặp lại không tích lũy chuyển động khớp. Mục tiêu ở giữa đưa đầu về trung tâm; khi mất mục tiêu hoặc độ tin cậy thấp, đầu giữ vị trí thay vì quét bằng camera cố định.
+
+Theo dõi mô phỏng với camera cố định đặt mục tiêu 30 lần cập nhật/giây và không giới hạn thời lượng phiên; nút Stop, mất độ tin cậy hoặc mất xác nhận từ bộ phát hiện vẫn có thể kết thúc phiên. Theo dõi phần cứng thật giữ thời hạn cấu hình và mục tiêu 15 Hz. Mô phỏng động lấy tọa độ khớp tối đa 30 Hz, mỗi lần chỉ có một yêu cầu đang chờ; trạng thái chung cập nhật mỗi giây. Chế độ CAD thô là tĩnh; dùng mô hình động để xem chuyển động.
+
+### Tìm khuôn mặt liên tục
+
+Chọn `face` (hoặc bí danh khuôn mặt) sẽ bật tìm kiếm liên tục ngay cả khi phòng trống. Khi mất độ tin cậy hoặc hết thời gian phiên, HAL chờ hai giây rồi tìm lại từ khung hình mới. Chỉ một luồng theo dõi điều khiển chuyển động tại một thời điểm. `/servo/track` trả `tracking: true, searching: true`, không có bbox hoặc độ tin cậy khi đang tìm; khi bám được mặt, `searching: false`. Các mục tiêu đồ vật khác vẫn dùng một phiên. Lệnh dừng theo dõi, dừng/thả servo và tắt camera sẽ hủy tìm kiếm. Đặt `HAL_AUTO_TRACK_FACE=true` trong môi trường khởi động HAL để tự bật sau khi khởi động lại, trừ khi camera đã tắt. Bật lại camera không tự bật lại theo dõi.
+
+### Độ ổn định khung khuôn mặt trên Pi
+
+Trạng thái theo dõi và lớp phủ camera làm mượt tâm cùng kích thước khung với hằng số thời gian 120 ms. Giữ khung khi một phép đo nhảy vị trí/kích thước; hai phép đo ngoại lệ nhất quán cho phép chuyển vị trí. Các cơ chế an toàn động cơ vẫn dùng khung thô. Mỗi dấu thời gian ảnh chỉ được xử lý một lần nếu camera cung cấp dấu thời gian. Kết quả phát hiện nền giữ ảnh nguồn, khởi tạo ViT trên ảnh đó rồi cập nhật sang ảnh mới nhất; kết quả lỗi hoặc cũ hơn hai giây không thay thế bộ theo dõi.
+
+Các điều khiển phơi sáng/lấy nét và số liệu tốc độ camera nằm trong Monitor → Camera. So sánh FPS đo được và tuổi ảnh khi chọn tốc độ; FPS yêu cầu không phải tốc độ thực tế.
+
+Bộ theo dõi đăng ký sử dụng camera ở tốc độ hoạt động trong toàn bộ phiên và hủy đăng ký khi kết thúc, kể cả khi lỗi. Đóng luồng xem trước trên trình duyệt không còn làm camera của phiên theo dõi giảm xuống tốc độ nghỉ 5 fps.

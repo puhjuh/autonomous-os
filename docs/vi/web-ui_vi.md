@@ -464,9 +464,12 @@ Hành vi gom nhóm Turn Pipeline:
 
 ### 5.4 Camera Section
 
+Bảng Camera tại `/monitor#camera` hiển thị luồng trực tiếp không bị che. Đã bỏ cửa sổ ảnh chụp nhỏ cùng nút chụp/tải; API ảnh chụp vẫn phục vụ thị giác OS và các thành phần khác.
+
 - **Camera Stream**: MJPEG live stream từ `GET /hw/camera/stream` (downscaled + throttled; mặc định ~10fps, ~320px chiều ngang). Thẻ `<img>` remount bằng kết nối mới (cache-buster `streamEpoch` tăng lên) mỗi khi camera chuyển sang enabled — qua nút Enable hoặc auto-enable phát hiện bởi polling — nên video live trở lại ngay, khỏi refresh trang. Lỗi stream xảy ra ngay sau enable (loop capture của HAL cần ~1-2s để có frame đầu) không bị latch: nó tự retry sau khoảng trễ ngắn tới khi load được frame.
 - **Display Eyes (GC9A01)**: Snapshot màn hình tròn 1.28" từ `GET /hw/display/snapshot`, hiển thị dạng hình tròn với amber glow. Có nút Refresh.
-- **Camera Snapshot**: Ảnh tĩnh từ `GET /hw/camera/snapshot`, có nút Capture để chụp mới.
+
+- **Camera Settings**: Với camera Raspberry Pi được hỗ trợ, `GET /hw/camera/controls` trả về thiết lập hiện tại, mặc định tự động, fps yêu cầu/thực đo và tuổi khung hình mới nhất tính bằng mili giây. Có thể chỉnh tốc độ (1–40 fps), bù phơi sáng, chế độ normal/sport, đo sáng trung tâm/điểm/trung bình, thời gian phơi sáng và gain (0 = tự động), lấy nét tự động/thủ công, cân bằng trắng, giảm nhấp nháy 50/60 Hz và HDR. Các thay đổi chỉ gửi bằng `POST /hw/camera/controls` khi bấm **Apply**; polling không ghi đè nội dung đang sửa. **Reset to Auto** gửi `{ "reset": true }`, khôi phục mọi mặc định camera gồm tốc độ 30 fps. Áp dụng hoặc đặt lại làm gián đoạn ngắn luồng đang chạy và giao diện tự kết nối lại; lỗi hiển thị trong thẻ. Camera không hỗ trợ sẽ ẩn thẻ này. Thiết lập được giữ lại khi HAL hoặc thiết bị khởi động lại: ưu tiên `HAL_RPICAM_CONTROLS_PATH`, rồi `HAL_STATE_DIR/rpicam-controls.json` nếu được cấu hình, cuối cùng `${XDG_STATE_HOME:-~/.local/state}/lamp/rpicam-controls.json`; thay đổi thiết lập không bật camera đang tắt. Khẩu độ cố định; phơi sáng dài có thể làm mờ khuôn mặt đang chuyển động. Fps thu hình thực đo tách biệt với tốc độ luồng xem trước đã giới hạn trên trình duyệt.
 
 ### 5.5 Logs Section
 
@@ -695,3 +698,7 @@ vẫn còn nguyên.
 Các target trên dành cho một thiết bị trong LAN. Để phát hành cho cả fleet, dùng
 đường OTA — `make upload-hal` rồi `make promote-hal`, vốn đánh version cho
 artifact và roll out.
+
+Theo dõi camera mặc định dùng `person`. Chọn mục tiêu cụ thể xuất hiện trong ảnh, như `person`, `cup` hoặc `bottle`; nhãn chung `object` cần bộ phát hiện từ xa được cấu hình. Yêu cầu bắt đầu thất bại hiển thị lỗi máy chủ ngay trong thẻ theo dõi.
+
+Đầu ra giọng nói Piper cục bộ khởi động không cần thông tin API đám mây khi Piper là nhà cung cấp TTS đã lưu. Cài engine và một giọng nói, chọn Piper rồi lưu trước khi thử trên bản cài đặt mới.

@@ -640,6 +640,7 @@ class ServoTrackRequest(BaseModel):
 class ServoTrackResponse(BaseModel):
     status: str
     tracking: bool
+    searching: bool = False
     target: Optional[str] = None
     bbox: Optional[list[int]] = None
     confidence: Optional[float] = None
@@ -681,10 +682,10 @@ class DisplayInfoRequest(BaseModel):
 
 class VoiceStartRequest(BaseModel):
     llm_api_key: str = Field(
-        ..., min_length=1, description="OpenAI-compatible API key for AutonomousSTT (LLM-as-STT fallback)"
+        "", description="Cloud STT/TTS API key; not required for local Vosk and Piper"
     )
     llm_base_url: str = Field(
-        ..., min_length=1, description="OpenAI-compatible base URL for TTS and STT"
+        "", description="Cloud TTS/STT base URL; not required for local Vosk and Piper"
     )
     tts_api_key: str = Field(
         "",

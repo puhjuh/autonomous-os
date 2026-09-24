@@ -604,3 +604,42 @@ hoặc sau một kiểm tra platform mà board không bao giờ thoả:
 
 Liên quan: [overview_vi.md](overview_vi.md) · [os-server_vi.md](os-server_vi.md) ·
 [agentic/codex_vi.md](agentic/codex_vi.md) · [realtime-voice_vi.md](realtime-voice_vi.md)
+
+### Webcam và micro tạm thời trên Pi
+
+`launchcommand` cục bộ có thể đọc `$OS_STATE_DIR/media.env`. Đặt `SIM_MEDIA=host`, `HAL_CAMERA_INDEX=0` và `HAL_AUDIO_INPUT_ALSA=plughw:CARD=C1,DEV=0` cho Opal C1 tạm thời. Định nghĩa Lamp đã khai báo camera và âm thanh; động cơ và LED vẫn được mô phỏng. `lamp-dev.sh` truyền cấu hình media vào tmux, gồm tùy chọn `HAL_AUDIO_OUTPUT_DEVICE`. Trên Pi này, chỉ số 0 là đầu ra HDMI (chưa kiểm tra phát loa); kiểm tra lại chỉ số khi kết nối lại thiết bị. Xóa `media.env` rồi khởi động lại để dùng đầu vào ảo. Chế độ host hỗ trợ thu hình/âm thanh; đăng nhập Claude không tự cấu hình nhận dạng hay tổng hợp giọng nói.
+
+### Pi 5 với Camera Module 3 và động cơ mô phỏng
+
+Đặt `HAL_SIMULATE=1`, `HAL_SIM_MEDIA=host` và `HAL_SIM_CAMERA_DRIVER=rpicam`
+trong môi trường dịch vụ khởi động (`~/.config/lamp/hal.env` trên Pi cục bộ).
+Camera CSI dùng driver `rpicam-vid` hiện có; động cơ và LED vẫn mô phỏng,
+lựa chọn âm thanh host không thay đổi. Driver camera mặc định là `host`;
+chế độ media virtual vẫn dùng camera ảo bất kể biến ghi đè này.
+HAL quản lý cảm biến và chia sẻ khung hình qua `/camera/stream`, ảnh chụp và
+thị giác OS. Xem camera tại `http://<device-lan-ip>/monitor#camera`.
+`lamp-stack.target` được bật cùng user lingering giúp khởi động không cần đăng nhập;
+dịch vụ thành phần tự khởi động lại khi lỗi. Lưu cấu hình camera trong môi trường
+dịch vụ để giữ qua các lần khởi động lại. Không chạy thêm tiến trình chiếm camera.
+
+Trên Pi này, nginx chuyển dashboard ở cổng 80 tới dịch vụ Vite tự khởi động
+ở cổng 5173. `/api/` vẫn đi qua os-server và giữ xác thực; tắt proxy buffering
+để truyền hình ảnh camera trực tiếp.
+
+Bản xem trước trên Pi dùng độ phân giải 1280×720 cho capture và stream, `HAL_RPICAM_ACTIVE_FPS=40`, `HAL_CAMERA_STREAM_FPS=40` và `HAL_CAMERA_STREAM_JPEG_QUALITY=85`. Đây là tốc độ mục tiêu; tốc độ thực tế phụ thuộc tải. Camera CSI trở về 5 fps khi không có consumer. Thiết bị khác giữ mặc định 15 fps khi hoạt động.
+
+Nhịp MJPEG tính cả thời gian xử lý trong mỗi chu kỳ, tránh cộng thêm thời gian mã hóa JPEG vào độ trễ của từng khung hình.
+
+Cảm biến mô phỏng không cung cấp nhận dạng khuôn mặt. Việc xác định người dùng xem đây là không có khuôn mặt và dùng giọng nói đã nhận dạng, không ghi traceback do thiếu bộ xử lý nhận thức.
+
+HAL_AUDIO_OUTPUT_DEVICE nhận chỉ số nguyên hoặc tên đầu ra chính xác. Với PipeWire, cài pipewire-alsa rồi đặt HAL_AUDIO_OUTPUT_DEVICE=pipewire và HAL_AUDIO_OUTPUT_ALSA=pipewire để dùng loa được chọn trên desktop, kể cả Bluetooth. Khởi động lại HAL sau khi cài cầu nối. Chọn theo tên không phụ thuộc thứ tự chỉ số thiết bị.
+
+## Xem đầu ra nguyên mẫu trên Pi
+
+Trang `/simulator` đọc `/servo/output` tối đa 30 Hz và hiển thị trực tiếp góc khớp do Pi tính, không thêm nội suy chuyển động trong trình duyệt. API trả về driver, đơn vị độ, thời điểm lấy mẫu, trạng thái tracking và nguồn vị trí mô phỏng/driver. `physical_feedback_verified` là false: API không xác minh phản hồi phần cứng. Khi lỗi đọc, giữ tư thế cuối và báo mất dữ liệu sau một giây, không tự tạo chuyển động thay thế. Camera và âm thanh vẫn có chỉ báo host/virtual thực tế.
+
+Lamp ở chế độ mô phỏng dùng driver mock, không gửi gói CAN CubeMars. Bộ thử GL40 và trình mô phỏng thiết kế riêng chưa được tích hợp. Cần hiệu chuẩn ánh xạ khớp–motor và bổ sung backend CAN trước khi điều khiển nguyên mẫu.
+
+Nút phong cách gọi `/servo/affect`: neutral, curious, calm, happy, sad, excited, fearful. Chỉ thay đổi độ mượt/tốc độ tracking, kế thừa hiệu chuẩn neutral và vẫn áp dụng giới hạn tốc độ an toàn. Không bật tracking, không bỏ Hold, không thêm độ lệch tư thế hoặc thay thế bản ghi cảm xúc. GET trả danh sách và trạng thái; POST nhận `name`, `intensity` (0–1, mặc định 1), `transition_s` (0–10, mặc định 0.5).
+
+Display tùy chọn tạo framebuffer tạm thời 240×240 trên Pi; chế độ mô phỏng không khởi tạo phần cứng màn hình. `/display/frame.png` mã hóa PNG không mất dữ liệu từ chính khung hình gửi tới driver. Trang web đọc tối đa 15 Hz, ẩn ảnh khi lỗi. `/display/snapshot` vẫn dùng JPEG. Đảm bảo pixel RGB nguồn, không đảm bảo màu/độ sáng thực tế, chuyển đổi định dạng panel hoặc truyền đủ mọi frame. Model/độ phân giải panel cuối cùng chưa xác nhận.

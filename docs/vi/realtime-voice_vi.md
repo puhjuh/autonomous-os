@@ -1203,3 +1203,39 @@ trong `config.json`:
 | `resources/` | System prompt (chung + theo provider) |
 | `../voice/voice_service.py` | Tích hợp: stream audio mic, tiêu thụ output, route delegate/handled |
 | `../voice/aec.py` | WebRTC AEC3 trên đường mic; tham chiếu lấy tại TTS output stream (mọi provider) |
+
+## Nhận dạng giọng nói cục bộ trên Raspberry Pi
+
+Cài extra HAL `local-stt` (`vosk==0.3.45`) và giải nén mô hình Vosk. Đặt `HAL_STT_PROVIDER=vosk`, `HAL_VOSK_MODEL` trỏ tới thư mục mô hình rồi khởi động lại HAL. Cả lúc khởi động và `/voice/start` đều ưu tiên Vosk cục bộ. Mô hình dùng chung giữa các phiên; PCM mono 16 kHz tạo văn bản tạm thời và cuối cùng, xả các từ còn lại đồng bộ khi đóng phiên. Thiếu thư viện hoặc mô hình sẽ báo lỗi, không chuyển âm thanh lên đám mây.
+
+Đây là cấu hình môi trường, không phải tùy chọn mới trong Language. Xóa `HAL_STT_PROVIDER` và khởi động lại để dùng dịch vụ đám mây đã cấu hình. Piper phát giọng nói cục bộ; agent hiện tại vẫn tạo câu trả lời và có thể cần Internet. Nhận diện người nói là tùy chọn độc lập. Mô hình tiếng Anh nhỏ ưu tiên bộ nhớ và độ trễ thấp hơn độ chính xác.
+
+### Pi: Whisper cục bộ và bộ nhớ Claude có quyền ghi
+
+Để tăng độ chính xác nhận dạng tiếng Anh cục bộ, cài extra `local-whisper` của HAL
+(`sherpa-onnx==1.13.7`) và giải nén
+[gói Sherpa-ONNX Whisper base.en chính thức](https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-base.en.tar.bz2)
+ngoài repository. Đặt `HAL_STT_PROVIDER=whisper` và `HAL_WHISPER_MODEL` thành đường
+dẫn thư mục đã giải nén. Provider dùng `base.en-encoder.int8.onnx`,
+`base.en-decoder.int8.onnx`, `base.en-tokens.txt`, chạy CPU với ba luồng.
+Một recognizer được tải khi cần và dùng chung; mỗi lượt VAD được đệm và trả kết
+quả cuối đồng bộ khi đóng. Không có bản chép từng phần. Bỏ qua im lặng/keepalive
+rỗng; giới hạn mỗi lượt 120 giây, giải mã theo đoạn 25 giây. Pipeline vẫn dùng
+VAD micro, kiểm tra câu đánh thức, nhận diện người nói và Piper. Cả khởi động và
+`/voice/start` đều dùng lựa chọn này. Đặt `HAL_STT_PROVIDER=vosk` để quay lại.
+
+Hai bản ghi hỏi thời tiết trên Pi mà Vosk nghe sai đã được Whisper base.en chép
+đúng, gồm “Hello lamp,” trong 2,4–3,0 giây mỗi bản ghi. Đây là số đo mẫu cục bộ,
+không phải bảo đảm chung về độ chính xác hoặc độ trễ.
+
+Khi HAL chạy bằng tài khoản thường với Claude Code, đặt
+`HAL_CLAUDECODE_WORKSPACE_DIR` đến workspace Claude hiện có của người dùng, ví dụ
+`/home/pj/.claudecode/workspace`. Mặc định `/root/.claudecode/workspace` không cho
+`pj` truy cập, gây lỗi tải danh tính/skills và lưu bộ nhớ. Thư mục con `memory/`
+và `realtime/` phải cho người dùng chạy HAL ghi dữ liệu.
+
+Với cấu hình Pi STT cục bộ → Claude → Piper, `HAL_REALTIME_ENABLED=false` tắt
+agent realtime Gemini/OpenAI riêng biệt. Nếu không, Gemini mặc định cố khởi động
+khi chưa có khóa. Việc này không tắt pipeline giọng nói thông thường. Kiểm tra
+micro trực tiếp sau nâng cấp đã chép đúng câu hỏi thời tiết, mở cổng đánh thức,
+nhận diện PJ và chuyển yêu cầu đến Claude.

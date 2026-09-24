@@ -1253,3 +1253,40 @@ is a top-level `config.json` flag:
 | `resources/` | System prompts (shared + per-provider) |
 | `../voice/voice_service.py` | Integration: streams mic audio, consumes output, routes delegate/handled |
 | `../voice/aec.py` | WebRTC AEC3 on the mic path; reference tapped at the TTS output stream (all providers) |
+
+## Local speech recognition on Raspberry Pi
+
+Install the optional `local-stt` HAL extra (`vosk==0.3.45`) and extract a Vosk model. Set `HAL_STT_PROVIDER=vosk` and `HAL_VOSK_MODEL` to the extracted model directory, then restart HAL. Both startup and `/voice/start` select local Vosk before cloud providers. The model is shared across sessions; 16 kHz mono PCM produces streaming partials and final segments, with remaining words flushed synchronously on session close. Missing dependencies/model fail explicitly without sending audio to a cloud fallback.
+
+This is a device environment override, not a new Language dropdown option. Remove `HAL_STT_PROVIDER` and restart to return to the configured cloud recognizer. Piper can provide local spoken output. The existing agent still generates replies and may require internet. Speaker identification is optional and independent. The small English model favors low memory and latency over recognition accuracy.
+
+### Pi: local Whisper and writable Claude memory
+
+For higher-accuracy local English transcription, install HAL's `local-whisper`
+extra (`sherpa-onnx==1.13.7`) and extract the official
+[Sherpa-ONNX Whisper base.en archive](https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-base.en.tar.bz2)
+outside the repository. Set `HAL_STT_PROVIDER=whisper` and `HAL_WHISPER_MODEL` to
+that extracted directory. The provider uses `base.en-encoder.int8.onnx`,
+`base.en-decoder.int8.onnx`, and `base.en-tokens.txt` on CPU with three threads.
+It shares one lazily loaded recognizer, buffers each VAD turn, and emits final
+text synchronously on close. There are no partial transcripts. Silence/empty
+keepalive sessions are skipped; turns are limited to 120 seconds and decoded in
+25-second chunks. Existing microphone VAD, wake-word gating, speaker identification
+and Piper output remain in the voice pipeline. Both startup and `/voice/start`
+honor this choice. Set `HAL_STT_PROVIDER=vosk` to restore the earlier provider.
+
+Two recorded Pi weather queries that Vosk misheard were correctly transcribed
+by Whisper base.en, including “Hello lamp,” in 2.4–3.0 seconds per recording.
+These are local sample timings, not a general accuracy/latency guarantee.
+
+When HAL runs as a normal user with Claude Code, set
+`HAL_CLAUDECODE_WORKSPACE_DIR` to that user's existing Claude workspace, e.g.
+`/home/pj/.claudecode/workspace`. The default `/root/.claudecode/workspace` is
+inaccessible to `pj` and causes identity/skills loading and memory-save errors.
+The `memory/` and `realtime/` subdirectories must be writable by the HAL user.
+
+On the Pi's local-STT → Claude → Piper setup, `HAL_REALTIME_ENABLED=false`
+disables the separate Gemini/OpenAI realtime agent. Otherwise the default Gemini
+agent tries to start without a key. This does not disable the normal voice pipeline.
+A live microphone check after the upgrade transcribed the full weather question
+correctly, opened the wake gate, identified PJ, and forwarded it to Claude.

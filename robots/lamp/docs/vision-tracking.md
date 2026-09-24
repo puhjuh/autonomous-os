@@ -936,3 +936,21 @@ curl -X POST 127.0.0.1:5001/servo/bearing/reset
 The reset is also wired to speech via `skills/servo-control` — *"I moved you"*, *"you're in a new
 place"*. Automatic detection needs several failures before acting, which is right for avoiding false
 positives but slow when the user already knows the lamp moved.
+
+### Simulated motors with a host camera
+
+With `HAL_SIMULATE=1` and `HAL_SIM_MEDIA=host`, tracking uses the real webcam and an in-memory motor adapter. Position reads, movement commands, and tracking register writes operate on virtual joints; no physical motors are required. Idle animation yields to tracking. The webcam is fixed and decoupled from the virtual head. Tracking maps its target bearing to an absolute pose around the simulator’s neutral pose (using the configured 60-degree horizontal camera field of view), then smoothly follows that pose. Repeated off-center observations do not accumulate joint movement. Centered targets return the head toward neutral; lost or low-confidence targets hold the head instead of sweeping a camera that cannot move.
+
+Fixed-camera simulated tracking targets 30 updates/second and has no session time limit; Stop, loss of tracking confidence, or loss of detector confirmation can still end a session. Physical tracking retains its configured timeout and 15 Hz target. The animated simulator polls joint coordinates at up to 30 Hz with one request in flight, and general status once per second. The raw CAD view is static; use the animated rig to see motion.
+
+### Persistent face search
+
+Selecting `face` (including face aliases) arms a continuous search even if the room is empty. After confidence loss or a session timeout, HAL waits two seconds and reacquires from a fresh camera frame. Only one tracking worker owns motion at a time. `/servo/track` reports `tracking: true, searching: true` with no bbox or confidence while waiting; a lock reports `searching: false`. Other object targets retain one-shot behavior. Explicit tracking stop, servo stop/release, and camera disable cancel the search. Set `HAL_AUTO_TRACK_FACE=true` in the HAL startup environment to arm it after reboot, unless the camera is disabled. Turning the camera back on does not itself rearm tracking.
+
+### Pi bounding-box stability
+
+Tracking status and the camera overlay smooth box center and size with a 120 ms time constant. One-frame position/scale outliers are held; two consistent outliers permit relocation. Raw boxes still drive the existing safety gates, so display smoothing does not hide an unsafe motor measurement. Each capture timestamp is processed once when the camera supplies timestamps. Background detector corrections retain their source image, initialize ViT on that image, then advance to the latest frame; failed corrections and results older than two seconds cannot replace the tracker. This avoids initializing an old detection box against a different image.
+
+Camera exposure/focus controls and capture timing are available in Monitor → Camera. Compare measured FPS and frame age when choosing capture rate; requested FPS is not measured throughput.
+
+Tracking registers as an active camera consumer for the entire session and releases that registration on exit, including errors. Closing the browser preview therefore no longer drops an active tracker to the 5 fps idle capture rate.

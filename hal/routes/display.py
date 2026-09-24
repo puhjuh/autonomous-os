@@ -58,3 +58,22 @@ def display_snapshot():
     if not data:
         raise HTTPException(404, "No frame rendered yet")
     return Response(content=data, media_type="image/jpeg")
+
+
+@router.get("/display/frame.png")
+def display_frame_png():
+    """Get the last rendered LCD framebuffer as a lossless PNG."""
+    if not state.display_service:
+        raise HTTPException(503, "Display not available")
+    data = state.display_service.get_frame_png_bytes()
+    if not data:
+        raise HTTPException(404, "No frame rendered yet")
+    return Response(
+        content=data,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )

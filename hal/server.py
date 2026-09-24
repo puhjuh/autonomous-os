@@ -45,6 +45,7 @@ from hal.config import (
     SERVO_PORT,
     SIMULATE,
     SIM_MEDIA,
+    SIM_CAMERA_DRIVER,
     TTS_SPEED,
     TTS_VOICE,
     TTS_INSTRUCTIONS,
@@ -198,10 +199,11 @@ if "camera" in _declared:
         _vision_cap = _profile.capabilities.get("vision")
         # Simulation never uses the production UVC driver: "virtual" paints a
         # synthetic scene, "host" opens the developer machine's webcam through
-        # the platform's native OpenCV backend. Only a real body reaches the
+        # the platform's native OpenCV backend (or an explicitly selected CSI
+        # backend on a Pi). Only a real body reaches the
         # ROBOT.md `driver:` selector.
         if _simulation:
-            _camera_driver = "host" if _simulation_media == "host" else "virtual"
+            _camera_driver = SIM_CAMERA_DRIVER if _simulation_media == "host" else "virtual"
         else:
             _camera_driver = _vision_cap.driver if _vision_cap else None
         LocalVideoCaptureDevice = resolve_camera_class(
@@ -526,8 +528,16 @@ async def lifespan(app: FastAPI):
         state.audio_output_device, state.audio_input_device = _audio_results
         _out_env = os.environ.get("HAL_AUDIO_OUTPUT_DEVICE")
         if _out_env is not None:
-            state.audio_output_device = int(_out_env)
-            logger.info("Audio output device override from env: %d", state.audio_output_device)
+            try:
+                state.audio_output_device = int(_out_env)
+            except ValueError:
+                # Stable names survive USB/HDMI enumeration changes after reboot.
+                matches = [i for i, d in enumerate(sd.query_devices())
+                           if d["name"] == _out_env and d["max_output_channels"] > 0]
+                if len(matches) != 1:
+                    raise RuntimeError(f"Audio output device {_out_env!r} must match exactly one output")
+                state.audio_output_device = matches[0]
+            logger.info("Audio output device override from env: %s (index=%d)", _out_env, state.audio_output_device)
         elif os.environ.get("HAL_AUDIO_OUTPUT_ALSA"):
             _alsa_out = os.environ["HAL_AUDIO_OUTPUT_ALSA"]
             _alsa_card = _alsa_out.split(":")[1].split(",")[0] if ":" in _alsa_out else ""
@@ -625,7 +635,8 @@ async def lifespan(app: FastAPI):
         stt_url = os_cfg.get("stt_base_url", "") or llm_url
         voice = os_cfg.get("tts_voice", "") or TTS_VOICE
         tts_provider = os_cfg.get("tts_provider", PROVIDER_OPENAI)
-        if tts_key and tts_url and TTSService and not state.tts_service:
+        # Local Piper needs no cloud credentials; its backend checks installed assets.
+        if (tts_provider == "piper" or (tts_key and tts_url)) and TTSService and not state.tts_service:
             state.tts_service = TTSService(
                 api_key=tts_key,
                 base_url=tts_url,
@@ -652,7 +663,13 @@ async def lifespan(app: FastAPI):
             logger.info("STT selection: deepgram_key=%s, DeepgramSTT=%s, AutonomousSTT=%s, agent=%s",
                         bool(dgk), DeepgramSTT is not None, AutonomousSTT is not None, agent_name)
             stt_keywords = state._stt_boost_terms()
-            if dgk and DeepgramSTT:
+            if os.environ.get("HAL_STT_PROVIDER", "").lower() == "whisper":
+                from hal.drivers.voice.stt.whisper_local import WhisperSTT
+                stt_provider = WhisperSTT()
+            elif os.environ.get("HAL_STT_PROVIDER", "").lower() == "vosk":
+                from hal.drivers.voice.stt.vosk_local import VoskSTT
+                stt_provider = VoskSTT()
+            elif dgk and DeepgramSTT:
                 stt_provider = DeepgramSTT(api_key=dgk, keywords=stt_keywords)
             elif stt_key and stt_url and AutonomousSTT:
                 stt_model = (os_cfg.get("stt_model") or "").strip() or None
@@ -899,7 +916,7 @@ async def lifespan(app: FastAPI):
     # Start display (GC9A01 eyes)
     if DisplayService:
         try:
-            state.display_service = DisplayService()
+            state.display_service = DisplayService(hardware_enabled=not _simulation)
             state.display_service.start()
             logger.info("DisplayService started")
         except Exception as e:
@@ -913,6 +930,13 @@ async def lifespan(app: FastAPI):
         from hal.drivers.tracking import TrackerService
         state.tracker_service = TrackerService()
         logger.info("TrackerService initialized")
+        if (os.environ.get("HAL_AUTO_TRACK_FACE", "false").lower() == "true"
+                and not state._camera_disabled and state.camera_capture
+                and state.animation_service):
+            state.tracker_service.start(
+                target_label="face", camera_capture=state.camera_capture,
+                animation_service=state.animation_service,
+            )
     else:
         logger.info("TrackerService skipped — needs servo+camera routes mounted")
 

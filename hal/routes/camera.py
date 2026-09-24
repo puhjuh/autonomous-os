@@ -46,6 +46,30 @@ def get_camera_info():
     return _camera_info_payload()
 
 
+@router.get("/camera/controls")
+def get_camera_controls():
+    """Report available CSI camera controls and measured delivery telemetry."""
+    cap = state.camera_capture
+    if cap is None or not callable(getattr(cap, "get_controls", None)):
+        return {"supported": False, "settings": {}, "defaults": {}}
+    return cap.get_controls()
+
+
+@router.post("/camera/controls")
+def set_camera_controls(patch: dict):
+    """Validate, persist and apply a partial settings update without enabling capture."""
+    cap = state.camera_capture
+    if cap is None or not callable(getattr(cap, "set_controls", None)):
+        raise HTTPException(400, "Camera controls are not supported by this camera")
+    try:
+        return cap.set_controls(patch)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except OSError as exc:
+        state.logger.warning("Could not persist camera controls: %s", exc)
+        raise HTTPException(500, "Could not save camera controls") from exc
+
+
 @router.post("/camera/zoom", response_model=CameraInfoResponse)
 def set_camera_zoom(req: CameraZoomRequest):
     """Set digital zoom factor (1.0 = no zoom, applies to all frame consumers).
@@ -70,6 +94,8 @@ def disable_camera():
         return {"status": "already_disabled"}
     state._camera_disabled = True
     state._camera_manual_override = True
+    if state.tracker_service:
+        state.tracker_service.stop()
     state.camera_capture.stop()
     state._persist_camera_state()
     state.logger.info("Camera disabled by user (manual override set)")
@@ -196,6 +222,9 @@ def camera_stream():
                         time.sleep(min(0.01, min_interval_s - elapsed_s))
                         continue
 
+                # Count frame processing inside the pacing interval instead of
+                # adding JPEG encoding time to every requested frame period.
+                last_sent_s = time.time()
                 frame = state.camera_capture.last_frame
                 if frame is None:
                     time.sleep(0.05)
@@ -225,7 +254,6 @@ def camera_stream():
                 _, buf = cv2.imencode(
                     ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, int(stream_quality)]
                 )
-                last_sent_s = time.time()
                 yield (
                     b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
                 )

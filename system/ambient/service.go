@@ -10,6 +10,7 @@ import (
 	"context"
 	"log/slog"
 	"math/rand"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -115,7 +116,7 @@ func (s *Service) Start(ctx context.Context) {
 	if device.Has(devType, device.CapMotion) {
 		start(s.microMovementLoop)
 	}
-	if device.Has(devType, device.CapAudio) {
+	if device.Has(devType, device.CapAudio) && os.Getenv("LAMP_AMBIENT_MUMBLE") != "false" {
 		start(s.mumbleLoop)
 	}
 

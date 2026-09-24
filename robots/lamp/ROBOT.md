@@ -25,10 +25,9 @@ capabilities:
   presence:     { required: true }
   motion:       { routes: [servo], driver: feetech, required: true, safety: SAFETY.md#motion }
   light:        { routes: [led, scene], driver: ws2812, required: true, safety: SAFETY.md#light }
-  # display: lamp has NO screen — do not re-declare. Declaring it (even
-  # required:false) makes HAL mount /display and run DisplayService in
-  # framebuffer-only mode: a render loop drawing eyes nobody sees, plus an
-  # "Unknown expression" warning on every emotion.
+  # Prototype LCD: render on the Pi even before the panel arrives.
+  # Simulation uses the same framebuffer with hardware output disabled.
+  display:      { routes: [display], required: false }
   expression:   { routes: [emotion], required: true }
   # lifelike: routeless — opts into the os-server idle "living creature" suite
   # (breathing LED, servo micro-movements, TTS self-talk). Omit it to keep a

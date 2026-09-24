@@ -510,8 +510,15 @@ SPEAKER_UNKNOWN_AUDIO_DIR: str = os.environ.get(
     os.path.join(tempfile.gettempdir(), "hal-unknown-voice"),
 )
 DL_SPEAKER_ENDPOINT = os.environ.get("DL_SPEAKER_ENDPOINT", "/hal/api/dl/audio-recognizer/embed")
-SPEAKER_EMBEDDING_API_URL: str = DL_BACKEND_URL.rstrip("/") + "/" + DL_SPEAKER_ENDPOINT.strip("/") if DL_BACKEND_URL else ""
-SPEAKER_EMBEDDING_API_KEY: str = DL_API_KEY
+# An explicit endpoint allows a local CPU service without changing the cloud backend.
+SPEAKER_EMBEDDING_API_URL: str = os.environ.get(
+    "SPEAKER_EMBEDDING_API_URL",
+    DL_BACKEND_URL.rstrip("/") + "/" + DL_SPEAKER_ENDPOINT.strip("/") if DL_BACKEND_URL else "",
+)
+SPEAKER_EMBEDDING_API_KEY: str = os.environ.get(
+    "SPEAKER_EMBEDDING_API_KEY",
+    "" if os.environ.get("SPEAKER_EMBEDDING_API_URL") else DL_API_KEY,
+)
 
 # --- Sensing: Speaker recognition — on-device audio preprocessing ---
 SPEAKER_PROC_TARGET_SR: int = int(os.environ.get("HAL_SPEAKER_PROC_TARGET_SR", "16000"))
@@ -1199,6 +1206,11 @@ STATE_DIR: str = os.environ.get("HAL_STATE_DIR", "/tmp")
 # configuration, so it stays there.
 SIMULATE: bool = os.environ.get("HAL_SIMULATE", "").lower() in ("1", "true", "yes")
 SIM_MEDIA: str = os.environ.get("HAL_SIM_MEDIA", "virtual").strip().lower()
+# Host media can use a CSI camera on a Pi while motors remain simulated.
+# This override is ignored for virtual media and physical robot profiles.
+SIM_CAMERA_DRIVER: str = os.environ.get("HAL_SIM_CAMERA_DRIVER", "host").strip().lower()
+if SIMULATE and SIM_MEDIA == "host" and SIM_CAMERA_DRIVER not in {"host", "rpicam"}:
+    raise ValueError("HAL_SIM_CAMERA_DRIVER must be 'host' or 'rpicam'")
 # Who a turn belongs to when neither face nor voice has named anyone.
 DEFAULT_USER: str = os.environ.get("HAL_DEFAULT_USER", "unknown")
 # Where the remembered user bearing lives. NOT a boot sidecar: this must survive

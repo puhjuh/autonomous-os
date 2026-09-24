@@ -7,6 +7,7 @@ recognition service, kept next to the rest of that code.
 
 import asyncio
 import json
+import os
 import threading
 import time
 from typing import Optional
@@ -135,14 +136,20 @@ def start_voice(req: VoiceStartRequest):
         # "autonomous" alias arm the same gate (see _build_wake_words and
         # voice/_internal/config.py DEFAULT_WAKE_WORDS).
         stt_keywords = state._stt_boost_terms()
-        if req.deepgram_api_key and DeepgramSTT:
+        if os.environ.get("HAL_STT_PROVIDER", "").lower() == "whisper":
+            from hal.drivers.voice.stt.whisper_local import WhisperSTT
+            stt_provider = WhisperSTT()
+        elif os.environ.get("HAL_STT_PROVIDER", "").lower() == "vosk":
+            from hal.drivers.voice.stt.vosk_local import VoskSTT
+            stt_provider = VoskSTT()
+        elif req.deepgram_api_key and DeepgramSTT:
             stt_provider = DeepgramSTT(api_key=req.deepgram_api_key, keywords=stt_keywords)
         elif AutonomousSTT:
             stt_provider = AutonomousSTT(
                 api_key=stt_api_key, base_url=stt_base_url, keywords=stt_keywords
             )
-        if not stt_provider:
-            raise HTTPException(503, "No STT provider available")
+        if not stt_provider or not stt_provider.available:
+            raise HTTPException(503, "STT is not configured: install the local model or configure cloud credentials")
         wake_words = state._build_wake_words(state._read_agent_name())
         state.voice_service = VoiceService(
             stt_provider=stt_provider,

@@ -23,6 +23,11 @@ holds it until `POST /api/media/release`.
 from __future__ import annotations
 
 import logging
+import select
+import tempfile
+from collections import deque
+from pathlib import Path
+import os
 import shutil
 import subprocess
 import threading
@@ -32,6 +37,7 @@ from typing import override
 import numpy as np
 import numpy.typing as npt
 
+from .rpicam_controls import RpicamControls
 from .models import VideoCaptureDeviceInfo, VideoCaptureDeviceResponse
 from .video_capture_device import VideoCaptureDeviceBase
 
@@ -67,7 +73,7 @@ class RpicamVideoCaptureDevice(VideoCaptureDeviceBase):
     # except here the rate is a child-process argument, so changing it means
     # respawning rather than sleeping in the read loop.
     _IDLE_FPS: int = 5
-    _ACTIVE_FPS: int = 15
+    _ACTIVE_FPS: int = 30
 
     def __init__(
         self,
@@ -83,7 +89,24 @@ class RpicamVideoCaptureDevice(VideoCaptureDeviceBase):
         self._lock: threading.Lock = threading.Lock()
         self._stopped: threading.Event = threading.Event()
         self._proc: subprocess.Popen | None = None
+        self._process_lock = threading.Lock()
+        self._lifecycle_lock = threading.Lock()
+        self._settings_lock = threading.RLock()
+        self._frame_times = deque(maxlen=90)
+        state_dir = Path(os.environ.get("HAL_STATE_DIR") or
+                         str(Path(os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")) / "lamp"))
+        self._controls_path = Path(os.environ.get("HAL_RPICAM_CONTROLS_PATH") or
+                                   str(state_dir / "rpicam-controls.json"))
+        self._settings = RpicamControls()
+        try:
+            self._settings = RpicamControls.model_validate_json(self._controls_path.read_text())
+        except FileNotFoundError:
+            pass
+        except (ValueError, OSError) as exc:
+            logger.warning("Ignoring invalid saved camera controls: %s", exc)
 
+        # Persisted controls define the active delivery rate.
+        self._active_fps = self._settings.fps
         self._active_consumers: int = 0
         self._consumers_lock: threading.Lock = threading.Lock()
         # Set when the consumer count crosses 0 so the loop respawns the child
@@ -128,6 +151,7 @@ class RpicamVideoCaptureDevice(VideoCaptureDeviceBase):
             if new_frame_info:
                 self._last_response = new_frame_info.model_copy(deep=True)
                 self._last_frame_monotonic = time.monotonic()
+                self._frame_times.append(self._last_frame_monotonic)
             else:
                 self._last_response = None
                 self._last_frame_monotonic = 0.0
@@ -148,6 +172,47 @@ class RpicamVideoCaptureDevice(VideoCaptureDeviceBase):
         if crossed:
             self._rate_changed.set()
 
+    def get_controls(self) -> dict:
+        with self._settings_lock:
+            settings = self._settings.model_dump()
+        with self._lock:
+            times = list(self._frame_times)
+            last = self._last_frame_monotonic
+        now = time.monotonic()
+        fresh = not self._stopped.is_set() and last > 0 and now - last < 2
+        measured = ((len(times) - 1) / (times[-1] - times[0])
+                    if fresh and len(times) > 1 and times[-1] > times[0] else 0.0)
+        return {"supported": True, "settings": settings,
+                "defaults": RpicamControls().model_dump(),
+                "requested_fps": self._target_fps(), "measured_fps": round(measured, 2),
+                "frame_age_ms": round((now - last) * 1000, 1) if last else None}
+
+    def set_controls(self, patch: dict) -> dict:
+        patch = dict(patch)
+        reset = patch.pop("reset", False)
+        if not isinstance(reset, bool):
+            raise ValueError("reset must be a boolean")
+        with self._settings_lock:
+            values = RpicamControls().model_dump() if reset else self._settings.model_dump()
+            settings = RpicamControls.model_validate(values | patch)
+            self._controls_path.parent.mkdir(parents=True, exist_ok=True)
+            fd, temporary = tempfile.mkstemp(dir=self._controls_path.parent, prefix=".camera-controls-")
+            try:
+                with os.fdopen(fd, "w") as output:
+                    output.write(settings.model_dump_json())
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.replace(temporary, self._controls_path)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+            self._settings = settings
+            with self._consumers_lock:
+                self._active_fps = settings.fps
+            # The capture thread alone spawns children. A stopped camera stays stopped.
+            self._rate_changed.set()
+        return self.get_controls()
+
     # --- lifecycle ----------------------------------------------------------
 
     @override
@@ -162,29 +227,36 @@ class RpicamVideoCaptureDevice(VideoCaptureDeviceBase):
 
     @override
     def start(self) -> None:
-        if self._thread is not None and self._thread.is_alive():
-            self._logger.info(f"{self.__class__.__name__} has already started")
-            return
-        if not shutil.which(self._binary()):
-            raise RuntimeError(
-                f"{self._binary()} not found — install rpicam-apps (or libcamera-apps)"
+        with self._lifecycle_lock:
+            if self._thread is not None and self._thread.is_alive():
+                self._logger.info(f"{self.__class__.__name__} has already started")
+                return
+            if not shutil.which(self._binary()):
+                raise RuntimeError(
+                    f"{self._binary()} not found — install rpicam-apps (or libcamera-apps)"
+                )
+            self._stopped.clear()
+            self._thread = threading.Thread(
+                target=self._capture_loop,
+                name=f"{self.__class__.__name__} capture loop",
+                daemon=True,
             )
-        self._stopped.clear()
-        self._thread = threading.Thread(
-            target=self._capture_loop,
-            name=f"{self.__class__.__name__} capture loop",
-            daemon=True,
-        )
-        self._thread.start()
+            self._thread.start()
 
     @override
     def stop(self):
-        super().stop()
-        self._stopped.set()
-        self._kill_child()
-        if self._thread is not None:
-            self._thread.join(timeout=5)
-            self._thread = None
+        with self._lifecycle_lock:
+            super().stop()
+            self._stopped.set()
+            self._kill_child()
+            if self._thread is not None:
+                self._thread.join(timeout=5)
+                if not self._thread.is_alive():
+                    self._thread = None
+            with self._lock:
+                self._last_response = None
+                self._last_frame_monotonic = 0.0
+                self._frame_times.clear()
 
     # --- internals ----------------------------------------------------------
 
@@ -195,7 +267,7 @@ class RpicamVideoCaptureDevice(VideoCaptureDeviceBase):
 
     def _target_fps(self) -> int:
         with self._consumers_lock:
-            return self._ACTIVE_FPS if self._active_consumers > 0 else self._IDLE_FPS
+            return self._active_fps if self._active_consumers > 0 else min(self._IDLE_FPS, self._active_fps)
 
     def _spawn(self, fps: int) -> subprocess.Popen:
         width = self._max_width or 1280
@@ -211,6 +283,7 @@ class RpicamVideoCaptureDevice(VideoCaptureDeviceBase):
             "--nopreview",
             "-o", "-",
         ]
+        cmd += self._settings.arguments()
         if self._rotate in (90, 180, 270):
             cmd += ["--rotation", str(int(self._rotate))]
         self._logger.info("starting %s at %dx%d@%dfps", cmd[0], width, height, fps)
@@ -221,7 +294,8 @@ class RpicamVideoCaptureDevice(VideoCaptureDeviceBase):
         return proc
 
     def _kill_child(self) -> None:
-        proc, self._proc = self._proc, None
+        with self._process_lock:
+            proc, self._proc = self._proc, None
         if proc is None:
             return
         try:
@@ -230,6 +304,7 @@ class RpicamVideoCaptureDevice(VideoCaptureDeviceBase):
         except Exception:
             try:
                 proc.kill()
+                proc.wait(timeout=3)
             except Exception:
                 pass
 
@@ -240,28 +315,42 @@ class RpicamVideoCaptureDevice(VideoCaptureDeviceBase):
         while not self._stopped.is_set():
             fps = self._target_fps()
             try:
-                self._proc = self._spawn(fps)
+                with self._settings_lock, self._process_lock:
+                    if self._stopped.is_set():
+                        break
+                    self._rate_changed.clear()
+                    fps = self._target_fps()
+                    proc = self._spawn(fps)
+                    self._proc = proc
+                with self._lock:
+                    self._frame_times.clear()
             except Exception as e:
                 self._logger.warning("spawn failed: %s", e)
                 self._stopped.wait(_RESTART_DELAY_S)
                 continue
 
-            self._rate_changed.clear()
             buf.clear()
             last_frame_at = time.monotonic()
 
             while not self._stopped.is_set():
-                # Respawn on a rate change: the frame rate is a launch argument.
-                if self._rate_changed.is_set() and self._target_fps() != fps:
-                    self._logger.info("consumer count changed — restarting at new rate")
+                # Camera controls and frame rate are child-process launch arguments.
+                if self._rate_changed.is_set():
+                    self._logger.info("camera settings or consumer count changed — restarting capture")
                     break
-                assert self._proc is not None
-                if self._proc.poll() is not None:
+                if proc.poll() is not None:
                     self._logger.warning(
-                        "%s exited (rc=%s) — restarting", self._binary(), self._proc.returncode
+                        "%s exited (rc=%s) — restarting", self._binary(), proc.returncode
                     )
                     break
-                chunk = self._proc.stdout.read(_READ_CHUNK) if self._proc.stdout else b""
+                if not proc.stdout:
+                    break
+                readable, _, _ = select.select([proc.stdout], [], [], 0.25)
+                if not readable:
+                    if time.monotonic() - last_frame_at > _STALL_RESTART_S:
+                        self._logger.warning("Camera capture stalled — restarting")
+                        break
+                    continue
+                chunk = os.read(proc.stdout.fileno(), _READ_CHUNK)
                 if not chunk:
                     self._logger.warning("capture pipe closed — restarting")
                     break
@@ -298,7 +387,7 @@ class RpicamVideoCaptureDevice(VideoCaptureDeviceBase):
                     break
 
             self._kill_child()
-            if not self._stopped.is_set():
+            if not self._stopped.is_set() and not self._rate_changed.is_set():
                 self._stopped.wait(_RESTART_DELAY_S)
 
     @staticmethod

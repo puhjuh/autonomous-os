@@ -374,3 +374,46 @@ Same unknown speaker, 2 minutes later:
 → Lamp: AppendEnrollNudge → cooldown NOT elapsed (< 5 min) → skip instruction
 → Agent: sees "Unknown Speaker: ..." without SKILL instruction → responds normally
 ```
+
+## Local CPU speaker model (Raspberry Pi)
+
+Install the HAL `local-speaker` optional dependency (`sherpa-onnx==1.13.7`).
+Download `wespeaker_en_voxceleb_resnet34.onnx` from the official
+[Sherpa-ONNX speaker model release](https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models)
+to persistent storage outside the repository. Model size is about 26.5 MB.
+Run from the repository root with the HAL Python environment:
+
+```sh
+HAL_SPEAKER_MODEL=/absolute/path/wespeaker_en_voxceleb_resnet34.onnx \
+  python -m hal.drivers.voice.speaker_recognizer.local_server
+```
+
+Set `SPEAKER_EMBEDDING_API_URL=http://127.0.0.1:5002/embed` in HAL's environment
+and restart HAL. The explicit endpoint takes precedence over the cloud backend;
+its API key defaults to empty. Loopback requests bypass cloud encryption.
+The service binds only to 127.0.0.1 and needs no account or network during inference.
+Run it as a persistent user service for reboot recovery, before HAL starts.
+
+`GET /health` reports a model fingerprint. `/embed` accepts HAL-preprocessed mono
+16 kHz WAV, with 0.5–120 seconds total per request and at most 8 recordings.
+Enrollment embeds whole utterances; recognition uses overlapping 3-second windows
+with 1-second hops. Vectors are normalized; the model fingerprint supports HAL's
+existing migration of stored recordings when the model changes. Enrollment still
+uses Settings → My Voice and the normal speaker API; do not edit profile files.
+Recognition quality and the existing similarity threshold need checking with real
+voices on the device. This identifies speakers; it does not replace transcription,
+Piper speech output, or the conversational language model.
+
+For the current Pi deployment, `lamp-speaker.service` runs the local endpoint at
+login/startup. `SPEAKER_MATCH_COS=0.78` and `SPEAKER_DIVERSITY_COS=0.90` are initial
+settings tested with repository speaker fixtures (same-speaker match and a
+rejected different-speaker recording); they are not a measured household accuracy
+guarantee. Validate again with enrolled users and the actual microphone.
+
+The Pi's identity data is stored persistently under
+`/home/pj/.local/share/lamp/identity/`: `users/` holds shared face/voice profiles,
+`strangers/` holds face clusters, and `voice_strangers/` holds voice clusters.
+HAL selects these through `HAL_USERS_DIR`, `HAL_STRANGERS_DIR`, and
+`HAL_VOICE_STRANGERS_DIR` in `/home/pj/.config/lamp/hal.env`. These override the
+temporary simulator paths. During migration, HAL was stopped and every copied
+file was checked byte-for-byte; the original temporary folders were retained.

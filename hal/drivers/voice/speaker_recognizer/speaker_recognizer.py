@@ -75,6 +75,7 @@ import threading
 import time
 import uuid
 import wave
+from urllib.parse import urlparse
 from math import gcd
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -1173,7 +1174,9 @@ class SpeakerRecognizer:
         self._debug_prof = threading.local()
 
         self._crypto: CryptoSession | None = None
-        if config.DL_ENCRYPTION_ENABLED:
+        # Loopback inference never uses the remote backend encryption protocol.
+        is_loopback = urlparse(self._api_url).hostname in ("127.0.0.1", "::1", "localhost")
+        if config.DL_ENCRYPTION_ENABLED and not is_loopback:
             public_key = resolve_public_key(config.DL_PUBLIC_KEY_URL, config.DL_API_KEY, config.DL_PUBLIC_KEY_FILE)
             if public_key is not None:
                 self._crypto = CryptoSession(public_key)
