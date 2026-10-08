@@ -194,6 +194,10 @@ class RpicamVideoCaptureDevice(VideoCaptureDeviceBase):
             raise ValueError("reset must be a boolean")
         with self._settings_lock:
             values = RpicamControls().model_dump() if reset else self._settings.model_dump()
+            if reset:
+                # Auto exposure/focus resets must retain physical mount calibration.
+                for key in ("rotation", "hflip", "vflip"):
+                    values[key] = getattr(self._settings, key)
             settings = RpicamControls.model_validate(values | patch)
             self._controls_path.parent.mkdir(parents=True, exist_ok=True)
             fd, temporary = tempfile.mkstemp(dir=self._controls_path.parent, prefix=".camera-controls-")
@@ -207,6 +211,10 @@ class RpicamVideoCaptureDevice(VideoCaptureDeviceBase):
                 if os.path.exists(temporary):
                     os.unlink(temporary)
             self._settings = settings
+            with self._lock:
+                self._last_response = None
+                self._last_frame_monotonic = 0.0
+                self._frame_times.clear()
             with self._consumers_lock:
                 self._active_fps = settings.fps
             # The capture thread alone spawns children. A stopped camera stays stopped.
@@ -284,13 +292,14 @@ class RpicamVideoCaptureDevice(VideoCaptureDeviceBase):
             "-o", "-",
         ]
         cmd += self._settings.arguments()
-        if self._rotate in (90, 180, 270):
-            cmd += ["--rotation", str(int(self._rotate))]
+        # Quarter turns are unsupported by rpicam-vid; orient decoded frames.
         self._logger.info("starting %s at %dx%d@%dfps", cmd[0], width, height, fps)
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0
         )
-        self.actual_width, self.actual_height, self.actual_fps = width, height, float(fps)
+        rotation = (self._settings.rotation + (self._rotate or 0)) % 360
+        self.actual_width, self.actual_height = (height, width) if rotation in (90, 270) else (width, height)
+        self.actual_fps = float(fps)
         return proc
 
     def _kill_child(self) -> None:
@@ -322,6 +331,7 @@ class RpicamVideoCaptureDevice(VideoCaptureDeviceBase):
                     fps = self._target_fps()
                     proc = self._spawn(fps)
                     self._proc = proc
+                    settings = self._settings
                 with self._lock:
                     self._frame_times.clear()
             except Exception as e:
@@ -372,9 +382,15 @@ class RpicamVideoCaptureDevice(VideoCaptureDeviceBase):
                 if newest is not None:
                     frame = cv2.imdecode(np.frombuffer(newest, np.uint8), cv2.IMREAD_COLOR)
                     if frame is not None:
+                        frame = settings.orient_frame(cv2, frame, self._rotate)
                         if self.zoom and self.zoom > 1.0:
                             frame = self._apply_zoom(cv2, frame, self.zoom)
-                        self.last_response = VideoCaptureDeviceResponse(frame=frame)
+                        with self._settings_lock:
+                            # An old child must not republish its frame after Apply.
+                            if self._rate_changed.is_set():
+                                break
+                            self.actual_height, self.actual_width = frame.shape[:2]
+                            self.last_response = VideoCaptureDeviceResponse(frame=frame)
                         last_frame_at = time.monotonic()
                 elif len(buf) > _MAX_BUFFER:
                     self._logger.warning("no JPEG boundary in %d bytes — resyncing", len(buf))

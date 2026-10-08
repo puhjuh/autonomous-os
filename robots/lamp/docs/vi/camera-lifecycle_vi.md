@@ -157,6 +157,17 @@ Manual override KHÔNG bị ghi đè bởi scene/emotion/presence triggers. Ch�
 - Chỉ voice command từ user hoặc system triggers (scene, emotion, presence) mới toggle
 - Agent không bao giờ tự quyết định tắt/bật camera mà không có yêu cầu
 
+## Hướng lắp camera Pi CSI
+
+Monitor → Camera → **Camera Settings** có tùy chọn xoay và lật theo cách lắp camera. `GET /api/hardware/camera/controls` đọc thiết lập; `POST /api/hardware/camera/controls` cập nhật qua proxy OS-server tới HAL `/camera/controls`.
+
+- `rotation`: số nguyên `0`, `90`, `180` hoặc `270`, theo chiều kim đồng hồ; mặc định `0`.
+- `hflip` / `vflip`: boolean JSON đúng kiểu, để lật trái/phải và trên/dưới; mặc định đều `false`.
+
+Ví dụ patch: `{"rotation": 90, "hflip": false, "vflip": false}`. Vòng giải mã rpicam xoay trước rồi lật theo các trục sau xoay, trước zoom số và `last_response` chung. Theo dõi, perception, ảnh chụp và xem trước đều dùng pixel đã chỉnh. Góc 90°/270° hoán đổi chiều rộng và chiều cao được trả về. Hướng màn hình LCD là thiết lập riêng.
+
+Hướng camera được lưu cùng các thiết lập khác trong `rpicam-controls.json`: ưu tiên `HAL_RPICAM_CONTROLS_PATH`, rồi `HAL_STATE_DIR/rpicam-controls.json` nếu được cấu hình, cuối cùng `${XDG_STATE_HOME:-~/.local/state}/lamp/rpicam-controls.json`. **Reset to Auto** (`{"reset": true}`) khôi phục phơi sáng, lấy nét và các mặc định tự động khác gồm 30 fps, đồng thời giữ `rotation`, `hflip` và `vflip` đã lưu; patch chỉ định rõ các trường này vẫn có thể thay đổi chúng trong cùng yêu cầu. Áp dụng thiết lập xóa khung hình trong bộ nhớ đệm và yêu cầu khởi động lại thu hình, nhưng không bật camera đang tắt.
+
 ## Digital Zoom
 
 Zoom phần mềm để tập trung vào vật nhỏ (vd: màn hình laptop đang gọi video call để Lamp đọc được nội dung).
@@ -168,7 +179,7 @@ Zoom phần mềm để tập trung vào vật nhỏ (vd: màn hình laptop đan
 
 ### Cơ chế
 
-Zoom được apply **trong capture loop** (`drivers/camera/video_capture_device.py::_video_capture_loop`) ngay sau rotate, trước khi set `last_response`. Loop center-crop frame theo `1/zoom` rồi resize về kích thước gốc, nên mọi consumer downstream đều đọc cùng buffer đã zoom:
+Zoom được apply **trong vòng thu hình/giải mã** (`drivers/camera/video_capture_device.py::_video_capture_loop`, hoặc vòng giải mã rpicam của Pi CSI), sau xoay và các tùy chọn lật, trước khi set `last_response`. Loop center-crop frame theo `1/zoom` rồi resize về kích thước sau chỉnh hướng, nên mọi consumer downstream đều đọc cùng buffer đã zoom:
 
 | Consumer | Nguồn frame | Thấy zoom? |
 |---|---|---|

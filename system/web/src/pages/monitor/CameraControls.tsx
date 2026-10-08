@@ -3,10 +3,13 @@ import { usePolling } from "../../hooks/usePolling";
 import { S } from "./styles";
 import { HW } from "./types";
 
-type Settings = { fps: number; exposure_compensation: number; exposure_mode: string; metering: string; shutter_us: number; gain: number; autofocus_mode: string; lens_position: number; awb: string; flicker_hz: number; hdr: string };
+type Settings = { fps: number; exposure_compensation: number; exposure_mode: string; metering: string; shutter_us: number; gain: number; autofocus_mode: string; lens_position: number; awb: string; flicker_hz: number; hdr: string; rotation: number; hflip: boolean; vflip: boolean };
 type Controls = { supported: boolean; settings: Settings; defaults: Settings; requested_fps?: number; measured_fps?: number | null; frame_age_ms?: number | null };
 type Field = { key: keyof Settings; label: string; min?: number; max?: number; step?: number; options?: [string, string][] };
 const fields: Field[] = [
+  { key: "rotation", label: "Mounting rotation", options: [["0", "None"], ["90", "90° clockwise"], ["180", "180° (upside down)"], ["270", "90° counterclockwise"]] },
+  { key: "hflip", label: "Flip left / right", options: [["false", "Off"], ["true", "On"]] },
+  { key: "vflip", label: "Flip top / bottom", options: [["false", "Off"], ["true", "On"]] },
   { key: "fps", label: "Capture frames per second", min: 1, max: 40, step: 1 },
   { key: "exposure_compensation", label: "Brightness adjustment (EV)", min: -2, max: 2, step: 0.1 },
   { key: "exposure_mode", label: "Exposure preference", options: [["normal", "Normal"], ["sport", "Short exposure for movement"]] },
@@ -62,13 +65,16 @@ export function CameraControls({ onApplied }: { onApplied: () => void }) {
       const settings: Record<string, string | number | boolean> = reset ? { reset: true } : {};
       if (!reset) for (const field of fields) {
         const value = draft[field.key];
-        if (value !== undefined) settings[field.key] = typeof controls.settings[field.key] === "number" ? Number(value) : value;
+        if (value !== undefined) {
+          const type = typeof controls.settings[field.key];
+          settings[field.key] = type === "number" ? Number(value) : type === "boolean" ? value === "true" : value;
+        }
       }
       const result = await readControls(await fetch(`${HW}/camera/controls`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings) }));
       setControls(result);
       setDraft({});
       setLoadError(null);
-      setNotice(reset ? "Automatic camera defaults restored." : "Camera settings applied.");
+      setNotice(reset ? "Automatic camera defaults restored. Mounting orientation kept." : "Camera settings applied.");
       onApplied();
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Could not apply camera settings.");
@@ -88,6 +94,10 @@ export function CameraControls({ onApplied }: { onApplied: () => void }) {
           <p style={{ color: "var(--lm-text-muted)", fontSize: 12, lineHeight: 1.6 }}>
             Apply briefly interrupts the live preview. Longer exposures brighten the image but can blur moving faces.
             Use center metering and a small brightness adjustment for a backlit face. Aperture is fixed on this camera.
+          </p>
+          <p style={{ color: "var(--lm-text-muted)", fontSize: 12, lineHeight: 1.6 }}>
+            Mounting rotation and flips correct the image before face detection and other analysis, and also apply to the preview.
+            Flips apply after rotation. Reset to Auto keeps the saved mounting orientation.
           </p>
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontSize: 12, marginBottom: 14, color: "var(--lm-text-dim)" }}>
             <span>Requested capture: {controls.requested_fps ?? controls.settings.fps} fps</span>

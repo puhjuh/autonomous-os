@@ -167,6 +167,17 @@ Manual override does NOT get auto-overridden by scene/emotion/presence triggers.
 - Only user-initiated voice commands or system triggers (scene, emotion, presence) should toggle
 - Agent must never decide on its own to turn camera off/on without user asking
 
+## Pi CSI Mounting Orientation
+
+Monitor → Camera → **Camera Settings** offers mounting rotation and flips. `GET /api/hardware/camera/controls` reads the settings; `POST /api/hardware/camera/controls` updates them through the OS-server proxy to HAL `/camera/controls`.
+
+- `rotation`: integer `0`, `90`, `180`, or `270`, clockwise; default `0`.
+- `hflip` / `vflip`: strict JSON booleans, for left/right and top/bottom flips; both default `false`.
+
+Example patch: `{"rotation": 90, "hflip": false, "vflip": false}`. The rpicam decode loop applies rotation first, then flips in the rotated axes, before digital zoom and shared `last_response`. Tracking, perception, snapshots, and the preview all consume corrected pixels. Quarter turns (90°/270°) swap delivered width and height. LCD orientation is separate.
+
+Orientation persists with the other settings in `rpicam-controls.json`: `HAL_RPICAM_CONTROLS_PATH` overrides the path, otherwise `HAL_STATE_DIR/rpicam-controls.json` is used when configured, falling back to `${XDG_STATE_HOME:-~/.local/state}/lamp/rpicam-controls.json`. **Reset to Auto** (`{"reset": true}`) restores exposure, focus, and other automatic defaults including 30 fps, while retaining saved `rotation`, `hflip`, and `vflip`; an explicit patch can override those fields in the same request. Applying settings clears cached frames and requests a capture restart, without enabling a disabled camera.
+
 ## Digital Zoom
 
 Software zoom for focusing on small subjects (e.g. a laptop screen during a video call so Lamp can read it).
@@ -178,7 +189,7 @@ Software zoom for focusing on small subjects (e.g. a laptop screen during a vide
 
 ### How it works
 
-Zoom is applied **inside the capture loop** (`drivers/camera/video_capture_device.py::_video_capture_loop`) right after rotate, before `last_response` is set. The loop center-crops the frame by `1/zoom` and resizes back to the original dimensions, so every downstream consumer reads the same zoomed buffer:
+Zoom is applied **inside the capture/decode loop** (`drivers/camera/video_capture_device.py::_video_capture_loop`, or the Pi CSI rpicam decode loop) after rotation and any mounting flips, before `last_response` is set. The loop center-crops the frame by `1/zoom` and resizes back to the oriented dimensions, so every downstream consumer reads the same zoomed buffer:
 
 | Consumer | Source | Sees zoom? |
 |---|---|---|

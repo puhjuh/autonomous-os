@@ -21,6 +21,7 @@ export default defineConfig(({ mode }) => {
     server: {
       // Listen on all interfaces so Vite prints the Network (local IP) URL.
       // host: true,
+      allowedHosts: ["lamp-pi.local"],
       proxy: proxy ? {
         // ws: true is required so /api/system/shell (xterm.js PTY WebSocket)
         // is upgraded through the proxy to the Pi.

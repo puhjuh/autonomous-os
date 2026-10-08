@@ -1,7 +1,7 @@
 """Validated libcamera controls shared by the camera driver and HTTP API."""
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class RpicamControls(BaseModel):
@@ -18,6 +18,28 @@ class RpicamControls(BaseModel):
     awb: Literal["auto", "indoor", "daylight"] = "auto"
     flicker_hz: Literal[0, 50, 60] = 0
     hdr: Literal["off", "auto"] = "off"
+    # Mount correction: clockwise rotation, then flips in the upright image.
+    rotation: Literal[0, 90, 180, 270] = 0
+    hflip: bool = False
+    vflip: bool = False
+
+    @field_validator("rotation", mode="before")
+    @classmethod
+    def validate_rotation(cls, value):
+        if type(value) is not int:
+            raise ValueError("rotation must be an integer: 0, 90, 180, or 270")
+        return value
+
+    def orient_frame(self, cv2, frame, base_rotation: float | None = None):
+        """Correct the shared frame before zoom, tracking, or perception."""
+        rotation = (self.rotation + (base_rotation or 0)) % 360
+        rotations = {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180,
+                     270: cv2.ROTATE_90_COUNTERCLOCKWISE}
+        if rotation in rotations:
+            frame = cv2.rotate(frame, rotations[rotation])
+        if self.hflip or self.vflip:
+            frame = cv2.flip(frame, -1 if self.hflip and self.vflip else 1 if self.hflip else 0)
+        return frame
 
     def arguments(self) -> list[str]:
         values = [

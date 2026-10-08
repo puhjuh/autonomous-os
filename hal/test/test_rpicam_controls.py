@@ -22,6 +22,8 @@ def camera(tmp_path, monkeypatch):
     {"exposure_compensation": 3}, {"shutter_us": -1}, {"gain": 17},
     {"metering": "custom"}, {"autofocus_mode": "off"}, {"lens_position": 33},
     {"awb": "invalid"}, {"flicker_hz": 55}, {"hdr": True}, {"unknown": 1},
+    {"rotation": 45}, {"rotation": "90"}, {"rotation": False},
+    {"rotation": 90.0}, {"hflip": 1}, {"vflip": "true"},
 ])
 def test_invalid_settings_do_not_mutate_or_persist(camera, patch):
     before = camera.get_controls()["settings"]
@@ -178,3 +180,87 @@ def test_stop_clears_frames_and_delivery_telemetry(camera):
     telemetry = camera.get_controls()
     assert telemetry["measured_fps"] == 0
     assert telemetry["frame_age_ms"] is None
+
+
+@pytest.mark.parametrize("rotation, expected", [
+    (0, [[1, 2, 3], [4, 5, 6]]),
+    (90, [[4, 1], [5, 2], [6, 3]]),
+    (180, [[6, 5, 4], [3, 2, 1]]),
+    (270, [[3, 6], [2, 5], [1, 4]]),
+])
+@pytest.mark.parametrize("hflip,vflip", [(False, False), (True, False), (False, True), (True, True)])
+def test_mount_rotation_and_flips_use_correct_axes(rotation, expected, hflip, vflip):
+    import cv2
+    import numpy as np
+    frame = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.uint8)
+    expected = np.array(expected, dtype=np.uint8)
+    if hflip:
+        expected = expected[:, ::-1]
+    if vflip:
+        expected = expected[::-1, :]
+    result = RpicamControls(rotation=rotation, hflip=hflip, vflip=vflip).orient_frame(cv2, frame)
+    np.testing.assert_array_equal(result, expected)
+
+
+def test_mount_settings_survive_reload_auto_reset_and_flush_old_frames(camera):
+    import numpy as np
+    from hal.drivers.camera.models import VideoCaptureDeviceResponse
+    camera.last_response = VideoCaptureDeviceResponse(frame=np.zeros((2, 3, 3), dtype=np.uint8))
+    camera.set_controls({"rotation": 90, "hflip": True, "fps": 20})
+    assert camera.last_frame is None
+    assert camera.last_frame_ts == 0
+    restored = RpicamVideoCaptureDevice(VideoCaptureDeviceInfo(device_id="csi"))
+    settings = restored.set_controls({"reset": True})["settings"]
+    assert settings["rotation"] == 90
+    assert settings["hflip"] is True
+    assert settings["fps"] == 30
+    assert restored._thread is None
+
+
+@pytest.mark.parametrize("rotation,width,height", [(0, 1280, 720), (90, 720, 1280), (180, 1280, 720), (270, 720, 1280)])
+def test_spawn_keeps_sensor_size_and_reports_oriented_dimensions(camera, monkeypatch, rotation, width, height):
+    camera.set_controls({"rotation": rotation})
+    popen = Mock()
+    monkeypatch.setattr("hal.drivers.camera.rpicam_capture_device.subprocess.Popen", popen)
+    camera._spawn(30)
+    args = popen.call_args.args[0]
+    assert "--rotation" not in args
+    assert args[args.index("--width") + 1] == "1280"
+    assert args[args.index("--height") + 1] == "720"
+    assert (camera.actual_width, camera.actual_height) == (width, height)
+
+
+@pytest.mark.parametrize("change_during_decode", [False, True])
+def test_capture_publishes_oriented_shared_frame_and_rejects_old_settings(camera, monkeypatch, change_during_decode):
+    import cv2
+    import numpy as np
+    from hal.drivers.camera import rpicam_capture_device as driver
+    raw = np.array([[[1, 1, 1], [2, 2, 2], [3, 3, 3]],
+                    [[4, 4, 4], [5, 5, 5], [6, 6, 6]]], dtype=np.uint8)
+    camera.set_controls({"rotation": 90, "hflip": True})
+    proc = Mock(stdout=Mock())
+    proc.poll.return_value = None
+    monkeypatch.setattr(camera, "_spawn", lambda fps: proc)
+    monkeypatch.setattr(driver.select, "select", lambda *args: ([proc.stdout], [], []))
+    reads = 0
+    def read(*args):
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return b"\xff\xd8\xffimage\xff\xd9"
+        camera._stopped.set()
+        return b""
+    def decode(*args):
+        if change_during_decode:
+            camera.set_controls({"rotation": 180})
+        return raw.copy()
+    monkeypatch.setattr(driver.os, "read", read)
+    monkeypatch.setattr(cv2, "imdecode", decode)
+    camera._thread = Mock()
+    camera._capture_loop()
+    if change_during_decode:
+        assert camera.last_frame is None
+    else:
+        np.testing.assert_array_equal(camera.last_frame[:, :, 0], [[1, 4], [2, 5], [3, 6]])
+        np.testing.assert_array_equal(camera.capture().frame, camera.last_frame)
+        assert (camera.actual_width, camera.actual_height) == (2, 3)
