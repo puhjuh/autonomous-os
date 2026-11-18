@@ -954,3 +954,11 @@ Tracking status and the camera overlay smooth box center and size with a 120 ms 
 Camera exposure/focus controls and capture timing are available in Monitor → Camera. Compare measured FPS and frame age when choosing capture rate; requested FPS is not measured throughput.
 
 Tracking registers as an active camera consumer for the entire session and releases that registration on exit, including errors. Closing the browser preview therefore no longer drops an active tracker to the 5 fps idle capture rate.
+
+### Direct face observation (opt in)
+
+`GET /servo/track/detected-face` runs a separate, rate-limited YuNet inference on an atomically paired camera frame and arrival timestamp. It returns the actual face-detection score and box, without changing the existing ViT tracker or the LCD’s tracking state. Missing, stale, clipped or ambiguous multiple-face results return no measurement; when several candidates appear, a score of at least 0.60 and a lead of at least 0.20 are required to select a clear winner. Consumers must still reject stale frames and damp sudden changes. Repeated requests within 200 ms may return the prior detection with its original timestamp and updated age, and no sample is returned once it is more than 350 ms old. Capture time is frame arrival, not verified sensor exposure time. Each inference adds compute load, so Pi latency and LCD performance should be measured before using it for motor control.
+
+An explicit `?fallback=true` allows the existing tracker measurement only if the independent detector cannot load; its `source` and `confidence_kind` identify tracker quality rather than a YuNet detection score. A missed or ambiguous face, stale camera, or busy detector never silently falls back.
+
+`GET /servo/track/detected-face/cached` returns the most recent fresh, trusted YuNet observation without running detection or waiting for the detector lock. Lampy’s eye renderer can use this observation while the motor tracker is active; missing, disabled, ambiguous or older-than-350-ms observations return no measurement. The eye falls back to its existing visual tracker when no valid cached face is available.

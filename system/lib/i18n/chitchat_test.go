@@ -28,6 +28,13 @@ func TestBuildVoiceWakeWordsUsesHALPrefixes(t *testing.T) {
 	}
 }
 
+func TestBuildVoiceWakeWordsAcceptsBareLampy(t *testing.T) {
+	words := BuildVoiceWakeWords(" Lampy ")
+	if len(words) != 10 || words[7] != "lampy" || words[8] != "load up celery man" || words[9] != "load up celery ma'am" {
+		t.Fatalf("BuildVoiceWakeWords(Lampy) = %v, want bare name and two exact video calls after prefixed aliases", words)
+	}
+}
+
 func TestBuildSupportedVoiceWakeWordsIncludesCurrentAndPermanentAliases(t *testing.T) {
 	words := BuildSupportedVoiceWakeWords("Luna", "lamp")
 	want := []string{

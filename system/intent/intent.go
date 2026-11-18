@@ -85,6 +85,19 @@ func match(text string, allowChitchat bool) *Result {
 	}
 
 	t := normalize(text)
+	// Ambiguous short stop words belong to the video only while it is active.
+	// Check before the audio/scene rules, which can otherwise consume "ok stop".
+	if capEnabled(device.CapDisplay) {
+		if result := matchVideoStop(t); result != nil {
+			return result
+		}
+		if result := matchCeleryVideo(t); result != nil {
+			return result
+		}
+		if result := matchDefaultVideo(t); result != nil {
+			return result
+		}
+	}
 	for _, r := range rules {
 		if !capEnabled(r.capability) {
 			continue

@@ -35,6 +35,23 @@ from hal.presets import (
 
 router = APIRouter()
 
+
+def _stop_video_if_active():
+    """Release the custom player before another sound claims the speaker."""
+    from hal.routes.display import _video_request, cancel_pending_video_start
+
+    cancel_pending_video_start()
+
+    try:
+        _video_request("/display/video")
+    except HTTPException as exc:
+        if exc.status_code == 503:  # Optional custom player is not running.
+            return
+        raise
+    # Send stop even if an earlier play is still being accepted. The player
+    # serializes its operations, so a pending start cannot slip past a mute.
+    _video_request("/display/video/stop", {})
+
 # --- Music style detection ---
 
 _MUSIC_STYLE_KEYWORDS: list[tuple[str, list[str]]] = [
@@ -214,6 +231,7 @@ def _on_music_complete():
 
 
 @router.post("/audio/play", response_model=StatusResponse, tags=["Audio"])
+@state.serialized_audio_operation
 def audio_play(req: MusicPlayRequest):
     """Search YouTube and play audio through the speaker."""
     if state._speaker_muted:
@@ -240,6 +258,8 @@ def audio_play(req: MusicPlayRequest):
         raise HTTPException(
             503, "Music service not available -- missing sounddevice or numpy"
         )
+
+    _stop_video_if_active()
 
     # [2026-05-11] DISABLED — random short cue ("On it!") was duplicating /
     # replacing the agent's main TTS reply now that Go no longer suppresses
@@ -274,8 +294,10 @@ def audio_play(req: MusicPlayRequest):
 
 
 @router.post("/audio/stop", response_model=StatusResponse, tags=["Audio"])
+@state.serialized_audio_operation
 def audio_stop():
     """Stop current music playback."""
+    _stop_video_if_active()
     if state.music_service and state.music_service.playing:
         state.music_service.stop()
     _on_music_complete()
@@ -283,11 +305,16 @@ def audio_stop():
 
 
 @router.post("/speaker/mute", response_model=StatusResponse, tags=["Audio"])
+@state.serialized_audio_operation
 def mute_speaker():
     """Mute all audio output -- TTS, music, backchannel suppressed."""
     if state._speaker_muted:
         return {"status": "already_muted"}
     state._speaker_muted = True
+    try:
+        _stop_video_if_active()
+    except HTTPException as exc:
+        state.logger.warning("Failed to stop video while muting: %s", exc)
     if state.tts_service and state.tts_service.speaking:
         state.tts_service.stop()
     if state.music_service and state.music_service.playing:
@@ -298,6 +325,7 @@ def mute_speaker():
 
 
 @router.post("/speaker/unmute", response_model=StatusResponse, tags=["Audio"])
+@state.serialized_audio_operation
 def unmute_speaker():
     """Unmute audio output."""
     if not state._speaker_muted:

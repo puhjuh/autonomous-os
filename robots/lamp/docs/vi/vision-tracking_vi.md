@@ -953,3 +953,11 @@ Trạng thái theo dõi và lớp phủ camera làm mượt tâm cùng kích th�
 Các điều khiển phơi sáng/lấy nét và số liệu tốc độ camera nằm trong Monitor → Camera. So sánh FPS đo được và tuổi ảnh khi chọn tốc độ; FPS yêu cầu không phải tốc độ thực tế.
 
 Bộ theo dõi đăng ký sử dụng camera ở tốc độ hoạt động trong toàn bộ phiên và hủy đăng ký khi kết thúc, kể cả khi lỗi. Đóng luồng xem trước trên trình duyệt không còn làm camera của phiên theo dõi giảm xuống tốc độ nghỉ 5 fps.
+
+### Quan sát khuôn mặt trực tiếp (tùy chọn)
+
+`GET /servo/track/detected-face` chạy bộ phát hiện YuNet riêng, giới hạn tối đa năm lần suy luận mỗi giây, trên một cặp khung hình và thời điểm nhận khung hình được đọc nguyên tử. Kết quả gồm hộp và điểm phát hiện khuôn mặt thực tế, không thay đổi bộ theo dõi ViT hoặc trạng thái theo dõi của LCD. Khi không có mặt, khung hình cũ, mặt bị cắt hoặc có nhiều mặt không rõ mục tiêu, API không trả về phép đo; với nhiều ứng viên, điểm cao nhất phải đạt ít nhất 0,60 và hơn ứng viên kế tiếp ít nhất 0,20 mới được chọn. Bộ dùng kết quả vẫn phải kiểm tra tuổi khung hình và làm dịu các thay đổi đột ngột. Trong vòng 200 ms, yêu cầu mới có thể nhận phép đo trước với dấu thời gian gốc và tuổi được cập nhật; phép đo quá 350 ms không được trả về. Dấu thời gian là lúc backend nhận khung hình, không phải thời điểm phơi sáng cảm biến đã xác minh. Suy luận làm tăng tải xử lý, vì vậy cần đo độ trễ và hiệu năng LCD trên Pi trước khi dùng để điều khiển động cơ.
+
+Chỉ khi truyền `?fallback=true` và không tải được bộ phát hiện riêng, API mới có thể trả về phép đo của bộ theo dõi hiện tại, có nhãn `source` và `confidence_kind` phân biệt điểm chất lượng theo dõi với điểm phát hiện YuNet. Việc không tìm thấy mặt, nhiều mặt, khung hình cũ hay bộ phát hiện đang bận không tự động chuyển sang kết quả thay thế.
+
+`GET /servo/track/detected-face/cached` trả về quan sát YuNet gần nhất còn mới và đáng tin cậy, không chạy lại bộ phát hiện hoặc chờ khóa suy luận. Mắt Lampy có thể dùng dữ liệu này khi động cơ đang theo dõi; dữ liệu thiếu, camera tắt, nhiều mặt không rõ hoặc cũ hơn 350 ms không trả phép đo. Khi không có khuôn mặt hợp lệ trong bộ nhớ đệm, mắt dùng lại tracker hình ảnh hiện có.

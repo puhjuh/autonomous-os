@@ -160,10 +160,15 @@ func BuildVoiceWakeWords(name string) []string {
 	if n == "" {
 		return nil
 	}
-	return []string{
+	words := []string{
 		"wake up " + n, "hello " + n, "okay " + n, "hey " + n,
 		"hi " + n, "alo " + n, "ok " + n,
 	}
+	// PJ's Lamp accepts its name alone as a call as well as prefixed phrases.
+	if n == "lampy" {
+		words = append(words, n, "load up celery man", "load up celery ma'am")
+	}
+	return words
 }
 
 // BuildSupportedVoiceWakeWords returns every phrase accepted by HAL's optional

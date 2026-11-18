@@ -44,6 +44,11 @@ from hal.presets import (
 router = APIRouter(tags=["Servo"])
 
 
+# Opt-in direct face detection is separate from the existing tracking/LCD path.
+from hal.drivers.tracking.yunet_measurement import YuNetMeasurement
+_yunet_measurement = YuNetMeasurement()
+
+
 def _sleep_servo_locked() -> bool:
     """True for the whole sleep, not just after torque-off.
 
@@ -588,6 +593,32 @@ def get_tracking_status():
         "bbox": s["bbox"],
         "confidence": s.get("confidence"),
     }
+
+
+@router.get("/servo/track/detected-face")
+def get_direct_face_measurement(fallback: bool = False):
+    """Frame-bound YuNet face detection; optional tracker fallback is labeled.
+
+    Missing/ambiguous/stale faces never fall back. A caller may explicitly ask
+    for the existing tracker only if the independent detector cannot load.
+    """
+    if state._camera_disabled:
+        return {"status": "camera_unavailable", "source": "yunet", "measurement": None}
+    result = _yunet_measurement.measure(state.camera_capture)
+    if fallback and result["status"] == "detector_unavailable" and state.tracker_service:
+        sample = getattr(state.tracker_service, "face_measurement", None)
+        if sample is not None:
+            sample = dict(sample, confidence_kind="tracker_quality")
+            return {"status": "fallback", "source": "tracker", "measurement": sample}
+    return result
+
+
+@router.get("/servo/track/detected-face/cached")
+def get_cached_direct_face_measurement():
+    """Read only the recent motor detector observation; never start inference."""
+    if state._camera_disabled:
+        return {"status": "camera_unavailable", "source": "yunet", "measurement": None}
+    return _yunet_measurement.cached(state.camera_capture)
 
 
 @router.post("/servo/track/update", response_model=ServoTrackResponse)

@@ -83,6 +83,10 @@ def merge_stt_hypothesis(previous: str, current: str) -> str:
 # Sentinel for "the recognizer ran and could not place this voice".
 UNKNOWN_LABEL = "unknown"
 
+# PJ explicitly wants this single named request to work without a wake name.
+# Unlike a vocative wake phrase, it must be the whole recognized utterance.
+_EXACT_VIDEO_CALLS = frozenset({"load up celery man", "load up celery maam"})
+
 
 class SpeakerDecorator:
     """Owns wake-word list + speaker recognizer + speech-emotion service."""
@@ -211,8 +215,13 @@ class SpeakerDecorator:
         phrases = self._normalized_wake_phrases()
         if not phrases:
             return False
+        normalized = _normalize(transcript)
+        if normalized in _EXACT_VIDEO_CALLS and normalized in phrases:
+            return True
         for sentence in _sentences(transcript):
             for phrase in phrases:
+                if phrase in _EXACT_VIDEO_CALLS:
+                    continue
                 if (
                     sentence == phrase
                     or sentence.startswith(phrase + " ")

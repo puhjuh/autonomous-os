@@ -56,6 +56,7 @@ from hal.drivers.voice._internal.speaker_decorate import (
 from hal.drivers.voice._internal.turn_dispatch import dispatch_turn
 from hal.drivers.voice._internal.vad_filters import SileroVADFilter, WebRTCVADFilter
 from hal.drivers.voice._internal.wakeword_focus import WakeWordFocus
+from hal.drivers.voice._internal.video_interrupt import FinalVideoStop, interrupt_video
 from hal.drivers.voice import aec
 from hal.drivers.voice.backchannel import Backchannel
 from hal.drivers.voice.stt import STTProvider
@@ -908,12 +909,13 @@ class VoiceService:
         reopen latency (no clipped first words after a push-to-talk cue)."""
         speech_start = None
         speech_pre_buffer = []  # frames buffered during holdoff period
+        speech_history = []  # snapshot before the first threshold-crossing frame
         # Sized for the barge-in path, which needs far more history than an
         # ordinary turn (see BARGE_IN_PRE_ROLL_FRAMES). The ordinary path trims
         # back to PRE_ROLL_FRAMES where it consumes this, so widening the buffer
         # does not lengthen normal turns.
         lookback = deque(
-            maxlen=max(
+            maxlen=1 + max(
                 voice_cfg.PRE_ROLL_FRAMES,
                 voice_cfg.BARGE_IN_PRE_ROLL_FRAMES
                 if voice_cfg.BARGE_IN_ENABLED
@@ -1222,6 +1224,13 @@ class VoiceService:
             ):
                 if speech_start is None:
                     speech_start = time.time()
+                    # Freeze the history before holdoff consumes more frames in
+                    # the rolling deque. Otherwise four holdoff frames evict
+                    # four of eight configured pre-roll frames, clipping calls.
+                    speech_history = (
+                        list(lookback)[:-1][-voice_cfg.PRE_ROLL_FRAMES:]
+                        if voice_cfg.PRE_ROLL_FRAMES > 0 else []
+                    )
                     speech_pre_buffer = [data]
                 else:
                     speech_pre_buffer.append(data)
@@ -1246,7 +1255,7 @@ class VoiceService:
                     # An ordinary turn keeps the short one, or every utterance
                     # would start with a second of room noise.
                     if not force_open:
-                        history = history[-voice_cfg.PRE_ROLL_FRAMES:]
+                        history = speech_history
                     else:
                         history = history[-voice_cfg.BARGE_IN_PRE_ROLL_FRAMES:]
                         # These frames were captured while the speaker was
@@ -1431,6 +1440,8 @@ class VoiceService:
         # either shape can arm the gate as soon as the alias is complete.
         wake_partial_hypothesis = [""]
         wake_final_hypothesis = [""]
+        from hal.routes.display import video_active, video_stop
+        final_video_stop = FinalVideoStop(video_active, video_stop)
 
         def wake_partial_candidate(text: str) -> str:
             wake_partial_hypothesis[0] = merge_stt_hypothesis(
@@ -1533,6 +1544,9 @@ class VoiceService:
             # Flux model fires multiple EndOfTurn events for natural pauses within
             # one utterance, so sending immediately would split a single sentence.
             logger.info("STT final segment: '%s'", text)
+            # Video audio can keep the session open after the user speaks.
+            # Act on exact confirmed segments without waiting for silence.
+            final_video_stop.on_final(text)
             if hal_config.WAKEWORD_ENABLED:
                 confirm_wake_word_gate(wake_final_candidate(text))
             # A turn's text is the LATEST sentence: default to this final, even
@@ -1980,6 +1994,20 @@ class VoiceService:
                     or (hal_config.WAKEWORD_ENABLED and self._wakeword_focus.is_active())
                 )
 
+            # An active video may confuse the short-turn speech classifier.
+            # Handle only the exact stop vocabulary first, and only if the
+            # player confirms it is active; other turns keep the normal gates.
+            video_interrupted = final_video_stop.accepted() or interrupt_video(
+                combined, video_active, video_stop
+            )
+            if video_interrupted and realtime_turn_started:
+                if hal_config.REALTIME_ENABLED:
+                    try:
+                        self._realtime.discard_open_activity("video-stop")
+                    except Exception as exc:
+                        logger.warning("Realtime video-stop discard failed: %s", exc)
+                realtime_turn_started = False
+
             # Noise guard: a session can open on a noise blip that fools the entry
             # VAD, and STT then either finds no words or invents a short filler for
             # it. Re-check the FULL captured buffer with Silero; if it isn't speech,
@@ -1988,7 +2016,8 @@ class VoiceService:
             # Fail-open: any error → leave it True (don't drop a real turn).
             rt_audio_is_speech = True
             if (
-                needs_noise_guard(combined)
+                not video_interrupted
+                and needs_noise_guard(combined)
                 and hal_config.REALTIME_REQUIRE_SPEECH_ON_EMPTY_STT
                 and audio_buffer
             ):
@@ -2123,7 +2152,7 @@ class VoiceService:
                         rt_audio_is_speech,
                         buf_duration,
                     )
-            else:
+            elif not video_interrupted:
                 start_realtime_turn()
 
             # Everything below reads the resolved speaker, so the parallel
@@ -2236,7 +2265,7 @@ class VoiceService:
                 or (hal_config.WAKEWORD_ENABLED and self._wakeword_focus.is_active())
             )
             wakeword_authorized = wake_word_confirmed.is_set() or wakeword_followup_active
-            dispatch_to_main = should_dispatch_to_main(
+            dispatch_to_main = not video_interrupted and should_dispatch_to_main(
                 hal_config.WAKEWORD_ENABLED,
                 wakeword_authorized,
             )

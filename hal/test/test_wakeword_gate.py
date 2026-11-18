@@ -34,6 +34,37 @@ def test_wake_word_match_requires_a_prefix_and_word_boundary():
     assert decorator.starts_with_wake_word("wake up luna, nghe mình nói này")
 
 
+def test_lampy_call_accepts_bare_name_without_matching_mid_sentence():
+    from hal.app_state import _build_wake_words
+
+    words = _build_wake_words("Lampy")
+    assert "lampy" in words
+    assert "luna" not in _build_wake_words("Luna")
+    decorator = _decorator(words)
+    assert decorator.starts_with_wake_word("Lampy, show me a video")
+    assert decorator.starts_with_wake_word("Hey Lampy, show me a video")
+    assert decorator.starts_with_wake_word("Lampy")
+    assert not decorator.starts_with_wake_word("I saw Lampy at the shop")
+
+
+def test_celery_call_is_exact_and_limited_to_lampy():
+    from hal.app_state import _build_wake_words
+
+    lampy = _decorator(_build_wake_words("Lampy"))
+    other = _decorator(_build_wake_words("Luna"))
+    for utterance in ("Load up celery man.", "Load up celery, ma’am.", "load up celery ma'am"):
+        assert lampy.classify_wake_word(utterance) == (utterance, "voice_command")
+        assert not other.starts_with_wake_word(utterance)
+    for utterance in (
+        "Do not load up celery man",
+        "Load up celery man tomorrow",
+        "I said load up celery man",
+        "We talked about it. Load up celery man.",
+        "What is a celery man?",
+    ):
+        assert not lampy.starts_with_wake_word(utterance)
+
+
 def test_wake_word_command_keeps_the_original_transcript():
     decorator = _decorator(["hey lamp"])
 

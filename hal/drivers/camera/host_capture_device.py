@@ -138,6 +138,14 @@ class HostVideoCaptureDevice(VideoCaptureDeviceBase):
             return None
 
     @property
+    def last_frame_snapshot(self):
+        """Return a frame and its monotonic arrival time from the same capture."""
+        with self._lock:
+            if self._last_response and self._last_response.frame is not None:
+                return self._last_response.frame.copy(), self._last_frame_monotonic
+            return None, 0.0
+
+    @property
     def last_frame_ts(self) -> float:
         with self._lock:
             return self._last_frame_monotonic

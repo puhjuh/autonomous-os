@@ -73,6 +73,7 @@ def list_scenes():
 
 
 @router.post("/scene", response_model=SceneResponse)
+@state.serialized_audio_operation
 def activate_scene(req: SceneRequest):
     """Activate a lighting scene preset."""
     preset = SCENE_PRESETS.get(req.scene)
@@ -155,6 +156,11 @@ def activate_scene(req: SceneRequest):
             state.tts_service.stop()
         if state.music_service and state.music_service.playing:
             state.music_service.stop()
+        try:
+            from hal.routes.music import _stop_video_if_active
+            _stop_video_if_active()
+        except Exception as exc:
+            state.logger.warning("Failed to stop video for scene: %s", exc)
         state._persist_speaker_state()
         state.logger.info("Scene %s: speaker muted", req.scene)
     elif spk == "on" and state._speaker_muted:
@@ -172,6 +178,7 @@ def activate_scene(req: SceneRequest):
 
 
 @router.post("/scene/off", response_model=StatusResponse)
+@state.serialized_audio_operation
 def deactivate_scene():
     """Deactivate current scene and return to idle state.
 

@@ -295,6 +295,7 @@ def get_voices(provider: Optional[str] = None, lang: Optional[str] = None):
 
 
 @router.post("/voice/speak", response_model=StatusResponse)
+@state.serialized_audio_operation
 def speak_text(req: SpeakRequest):
     """Synthesize text to speech and play through the speaker."""
     if not state.tts_service:
@@ -311,6 +312,9 @@ def speak_text(req: SpeakRequest):
             "POST /voice/speak: rejected -- music is playing (text='%s')", req.text[:80]
         )
         raise HTTPException(409, "Speaker busy -- music is playing")
+    from hal.routes.display import video_active
+    if video_active():
+        raise HTTPException(409, "Speaker busy -- video is playing")
 
     # Optional provider hot-swap for web TTS preview (test before saving config).
     # Only swap when something actually changed -- comparing values instead of
@@ -415,6 +419,7 @@ def realtime_history(req: RealtimeHistoryRequest):
 
 
 @router.post("/voice/speak-queue", response_model=StatusResponse)
+@state.serialized_audio_operation
 def speak_queue_text(req: SpeakRequest):
     """Speak text, queueing if TTS is currently busy.
 
@@ -439,6 +444,9 @@ def speak_queue_text(req: SpeakRequest):
     if state.music_service and state.music_service.streaming:
         state.logger.info("POST /voice/speak-queue: rejected -- music is playing")
         raise HTTPException(409, "Speaker busy -- music is playing")
+    from hal.routes.display import video_active
+    if video_active():
+        raise HTTPException(409, "Speaker busy -- video is playing")
     if not state.tts_service.available:
         raise HTTPException(503, "TTS not available")
     if req.voice:

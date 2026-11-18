@@ -7,6 +7,7 @@ from server; server imports routes).
 """
 
 import csv
+from functools import wraps
 import logging
 import os
 import threading
@@ -45,6 +46,18 @@ _BACKGROUND_EMOTIONS = {EMO_IDLE, EMO_THINKING}
 from hal.drivers.rgb.effects import run_effect as _run_effect
 
 logger = logging.getLogger("hal.server")
+
+# Serialize decisions that claim or mute the speaker.  The player itself runs
+# asynchronously; the lock only covers starting/stopping or queueing work.
+audio_operation_lock = threading.RLock()
+
+
+def serialized_audio_operation(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        with audio_operation_lock:
+            return fn(*args, **kwargs)
+    return wrapper
 
 # --- Service references (set during lifespan) ---
 
@@ -588,6 +601,7 @@ def start_voice_service(reason: str) -> bool:
     return True
 
 
+@serialized_audio_operation
 def _finalize_sleepy_peripherals(mute_mic: bool, mute_speaker: bool):
     """Enter silent sleep immediately without changing manual user mutes.
 
@@ -618,6 +632,11 @@ def _finalize_sleepy_peripherals(mute_mic: bool, mute_speaker: bool):
             tts_service.stop()
         if music_service and music_service.playing:
             music_service.stop()
+        try:
+            from hal.routes.music import _stop_video_if_active
+            _stop_video_if_active()
+        except Exception as exc:
+            logger.warning("Failed to stop video during sleep: %s", exc)
 
     _persist_sleep_state()
     logger.info("Sleepy finalized: LED off, mic muted, speaker muted")
@@ -1560,11 +1579,16 @@ def _read_agent_name() -> str:
 
 def _build_wake_words(name: str) -> list[str]:
     """Generate wake word variants from agent name."""
-    n = name.lower()
-    return [
+    n = name.strip().lower()
+    words = [
         f"{prefix} {n}"
         for prefix in ("hello", "hey", "hi", "alo", "okay", "ok", "wake up")
     ]
+    # PJ addresses this Lamp by name without a prefix. Other names keep the
+    # normal prefixed wake-word behavior.
+    if n == "lampy":
+        words.extend((n, "load up celery man", "load up celery ma'am"))
+    return words
 
 
 def _stt_boost_terms() -> list[str]:

@@ -439,7 +439,6 @@ def speaker_record_enroll(req: RecordEnrollRequest) -> EnrollResponse:
     voice = state.voice_service
     music = state.music_service
     was_running = bool(voice and getattr(voice, "_running", False))
-    prev_speaker_muted = state._speaker_muted
 
     # Step 1: release ALSA + suppress speaker output. The mic listener
     # holds the capture device, music can hold the playback device, and
@@ -449,8 +448,15 @@ def speaker_record_enroll(req: RecordEnrollRequest) -> EnrollResponse:
     # acoustics → embedding contamination). Setting _speaker_muted blocks
     # TTS, music, and backchannel paths via the existing speaker-gate
     # checks; we restore in finally below.
-    state._speaker_muted = True
-    state._enrolling = True
+    with state.audio_operation_lock:
+        prev_speaker_muted = state._speaker_muted
+        state._speaker_muted = True
+        state._enrolling = True
+        try:
+            from hal.routes.music import _stop_video_if_active
+            _stop_video_if_active()
+        except Exception as exc:
+            logger.warning("Failed to stop video before speaker enrollment: %s", exc)
     if state.tts_service and getattr(state.tts_service, "speaking", False):
         try:
             state.tts_service.stop()
@@ -514,9 +520,10 @@ def speaker_record_enroll(req: RecordEnrollRequest) -> EnrollResponse:
             pass
         # Restore speaker mute state — only relax the gate if we set it.
         # Don't overwrite a pre-existing mute the user/scene may have asked for.
-        state._enrolling = False
-        if not prev_speaker_muted:
-            state._speaker_muted = False
+        with state.audio_operation_lock:
+            state._enrolling = False
+            if not prev_speaker_muted:
+                state._speaker_muted = False
         # Always restart the listener so passive recognition / wake word
         # doesn't stay broken after a failed enroll. This is the one caller
         # that bypasses state.start_voice_service(): it owns the stop above

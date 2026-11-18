@@ -34,6 +34,7 @@ var Catalog = []string{
 	"user-emotion-detection",
 	"voice",
 	"wellbeing",
+	"youtube-video",
 }
 
 // Capability maps a skill to the ROBOT.md capabilities it requires,
@@ -68,4 +69,5 @@ var Capability = map[string][]string{
 	// speech emotion (mic, gated on audio). Loads when the device has either.
 	"user-emotion-detection": {device.CapAudio, device.CapPresence},
 	"voice":                  {device.CapAudio},
+	"youtube-video":          {device.CapDisplay},
 }

@@ -341,6 +341,29 @@ Requires sensing with camera (InsightFace). Enrolled person JPEGs persist under 
 
 11 expressions: neutral, happy, sad, curious, thinking, excited, shy, shock, sleepy, angry, love
 
+The optional Qualia video bridge provides `GET /display/video` (player state),
+`POST /display/video/play` (`{"query":"..."}`), and `POST /display/video/stop`.
+It requires the separate local video service and the custom tracking-eye
+renderer; the generic display framebuffer alone cannot show the video. The
+current Qualia protocol supports RGB332 (256-color) video with an EYE5
+grayscale fallback; the LCD and controller themselves support RGB. Playback depends on yt-dlp,
+ffmpeg, a working audio output, and network access. Starting is asynchronous;
+`active` includes the search and speech-wait phases and does not confirm that
+video is playing; later errors are exposed in status rather than spoken. The
+tracking eye remains visible until the first decoded video frame.
+The personal phrase “load up celery man” and a topic-free request to play a
+video select the specified Celery Man video directly; searches with a subject
+still select their first result.
+The exact local-STT variant “load up celery, ma’am” is also recognized after
+the normal voice authorization gate.
+Speaker mute and sleep request a player stop, and speech routes report the
+speaker busy while video is active. Exact spoken stop requests can interrupt
+active video even after the wake-word follow-up expires; “enough” was confirmed to stop playback in a live test, though speaker sound
+may affect recognition. During active video, exact stop
+phrases and repetitions such as “enough, enough” are handled before the short
+turn noise guard, which can otherwise misclassify speech over video audio.
+Confirmed STT segments can request the stop before the capture session closes.
+
 ### Voice
 
 | Method | Endpoint | Description |

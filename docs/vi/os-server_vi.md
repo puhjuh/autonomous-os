@@ -336,6 +336,28 @@ Cần sensing có camera (InsightFace). Mặc định ảnh người đã đăng
 
 11 expressions: neutral, happy, sad, curious, thinking, excited, shy, shock, sleepy, angry, love
 
+Cầu nối video Qualia tùy chọn cung cấp `GET /display/video` (trạng thái),
+`POST /display/video/play` (`{"query":"..."}`) và `POST /display/video/stop`.
+Cần service video cục bộ riêng và trình vẽ mắt theo dõi tùy chỉnh; framebuffer
+màn hình chung không tự hiển thị video. Giao thức Qualia hỗ trợ video RGB332
+(256 màu), với EYE5 thang xám dự phòng; phần cứng LCD và bộ điều khiển hỗ trợ
+RGB. Phát cần yt-dlp, ffmpeg, đầu ra âm thanh hoạt động và mạng. Bắt đầu
+bất đồng bộ; `active` bao gồm lúc tìm kiếm và chờ giọng nói, chưa xác nhận
+video đang phát. Lỗi xảy ra sau khi nhận lệnh hiện trong trạng thái, không được
+đọc tự động. Mắt tiếp tục hiển thị đến khi có khung video đầu tiên.
+Câu lệnh cá nhân “load up celery man” và yêu cầu phát video không nêu chủ đề
+chọn trực tiếp video Celery Man đã chỉ định; tìm kiếm có chủ đề vẫn chọn kết
+quả đầu tiên.
+Biến thể local-STT chính xác “load up celery, ma’am” cũng được nhận sau bước
+cho phép giọng nói thông thường.
+Tắt loa và chế độ ngủ yêu cầu dừng video; các route đọc báo loa đang bận khi
+video chạy. Lệnh dừng ngắn có thể ngắt video đang chạy kể cả sau thời gian theo
+dõi wake-word; “enough” đã dừng video trong một lần thử trực tiếp, dù âm thanh
+từ loa có thể ảnh hưởng đến nhận dạng.
+Khi video đang chạy, lệnh dừng chính xác và từ lặp như “enough, enough” được
+xử lý trước bộ lọc nhiễu cho lượt ngắn vì âm thanh video có thể làm lọc nhầm.
+Đoạn STT đã xác nhận có thể yêu cầu dừng trước khi phiên thu âm kết thúc.
+
 ### Voice
 
 | Method | Endpoint | Mô tả |
